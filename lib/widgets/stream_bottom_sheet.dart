@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/media_model.dart';
 import '../services/tmdb_service.dart';
-import '../services/torrentio_service.dart';
+import '../services/stream_service.dart';
 import '../screens/player_screen.dart';
 
 class StreamBottomSheet extends StatefulWidget {
@@ -26,6 +26,7 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
   List<TorrentStream> _streams = [];
   bool _loading = true;
   String? _error;
+  String? _imdbId;
 
   @override
   void initState() {
@@ -35,42 +36,50 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
 
   Future<void> _fetchStreams() async {
     try {
-      // Get IMDB ID if not provided
+      // Get IMDB ID
       String? imdbId = widget.imdbId;
       if (imdbId == null || imdbId.isEmpty) {
         imdbId = await TmdbService.getImdbId(
-            widget.item.id, widget.item.mediaType);
+          widget.item.id,
+          widget.item.mediaType,
+        );
       }
-      if (imdbId == null) {
+      _imdbId = imdbId;
+
+      if (imdbId == null || imdbId.isEmpty) {
         setState(() {
-          _error = 'Could not find IMDB ID for this title.';
+          _error = 'Could not find IMDB ID.\nThis title may not be indexed yet.';
           _loading = false;
         });
         return;
       }
 
-      final streams = await TorrentioService.getStreams(
+      print('[InFlex] Fetching streams for IMDB: $imdbId');
+
+      final streams = await StreamService.getAllStreams(
         imdbId: imdbId,
         type: widget.item.mediaType,
         season: widget.season,
         episode: widget.episode,
       );
 
-      final sorted = TorrentioService.sortByQuality(streams);
       setState(() {
-        _streams = sorted;
+        _streams = streams;
         _loading = false;
+        if (streams.isEmpty) {
+          _error = 'No streams found for this title yet.\nTry again later.';
+        }
       });
     } catch (e) {
       setState(() {
-        _error = 'Failed to load streams: $e';
+        _error = 'Failed to load streams.\n$e';
         _loading = false;
       });
     }
   }
 
   void _playStream(TorrentStream stream) {
-    Navigator.pop(context); // close sheet
+    Navigator.pop(context);
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -80,6 +89,7 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
           subtitle: widget.episode != null
               ? 'S${widget.season}:E${widget.episode}'
               : null,
+          isEmbed: stream.isEmbed,
         ),
       ),
     );
@@ -98,8 +108,7 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
         children: [
           // Handle
           Container(
-            width: 40,
-            height: 4,
+            width: 40, height: 4,
             decoration: BoxDecoration(
               color: Colors.white24,
               borderRadius: BorderRadius.circular(4),
@@ -132,6 +141,10 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
+                    if (_imdbId != null)
+                      Text(_imdbId!,
+                          style: const TextStyle(
+                              color: Colors.white24, fontSize: 10)),
                   ],
                 ),
               ),
@@ -152,50 +165,57 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
                   CircularProgressIndicator(
                       color: Color(0xFFFFCC00), strokeWidth: 2),
                   SizedBox(height: 12),
-                  Text('Fetching streams from Torrentio…',
+                  Text('Searching all sources…',
                       style: TextStyle(color: Colors.white38, fontSize: 13)),
                 ],
               ),
             )
-          else if (_error != null)
+          else if (_streams.isEmpty)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 24),
               child: Column(
                 children: [
-                  const Icon(Icons.error_outline, color: Colors.redAccent, size: 36),
-                  const SizedBox(height: 10),
-                  Text(_error!,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                          color: Colors.white54, fontSize: 13)),
+                  const Icon(Icons.search_off_rounded,
+                      color: Colors.white24, size: 40),
+                  const SizedBox(height: 12),
+                  Text(
+                    _error ?? 'No streams found.',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 13),
+                  ),
+                  const SizedBox(height: 16),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFFFCC00),
+                      foregroundColor: Colors.black,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                    ),
+                    icon: const Icon(Icons.refresh_rounded),
+                    label: const Text('Retry',
+                        style: TextStyle(fontWeight: FontWeight.w800)),
+                    onPressed: () {
+                      setState(() { _loading = true; _error = null; });
+                      _fetchStreams();
+                    },
+                  ),
                 ],
-              ),
-            )
-          else if (_streams.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 24),
-              child: Text(
-                'No streams found.\nThis title may not be available on Torrentio yet.',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white38, fontSize: 13),
               ),
             )
           else
             ConstrainedBox(
               constraints: BoxConstraints(
-                maxHeight: MediaQuery.of(context).size.height * 0.5,
+                maxHeight: MediaQuery.of(context).size.height * 0.55,
               ),
               child: ListView.separated(
                 shrinkWrap: true,
                 itemCount: _streams.length,
                 separatorBuilder: (_, __) => const SizedBox(height: 8),
-                itemBuilder: (_, i) {
-                  final s = _streams[i];
-                  return _StreamTile(
-                    stream: s,
-                    onTap: () => _playStream(s),
-                  );
-                },
+                itemBuilder: (_, i) => _StreamTile(
+                  stream: _streams[i],
+                  onTap: () => _playStream(_streams[i]),
+                ),
               ),
             ),
         ],
@@ -211,7 +231,7 @@ class _StreamTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final qualColor = Color(TorrentioService.qualityColor(stream.quality));
+    final qualColor = Color(StreamService.qualityColor(stream.quality));
 
     return GestureDetector(
       onTap: onTap,
@@ -224,15 +244,20 @@ class _StreamTile extends StatelessWidget {
         ),
         child: Row(
           children: [
-            // Magnet icon
+            // Icon
             Container(
-              width: 40,
-              height: 40,
+              width: 40, height: 40,
               decoration: BoxDecoration(
                 color: qualColor.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Icon(Icons.downloading_rounded, color: qualColor, size: 22),
+              child: Icon(
+                stream.isEmbed
+                    ? Icons.play_circle_outline_rounded
+                    : Icons.downloading_rounded,
+                color: qualColor,
+                size: 22,
+              ),
             ),
             const SizedBox(width: 12),
 
@@ -242,7 +267,7 @@ class _StreamTile extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    stream.title,
+                    stream.isEmbed ? stream.source : stream.title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
@@ -250,10 +275,22 @@ class _StreamTile extends StatelessWidget {
                         fontSize: 13,
                         fontWeight: FontWeight.w700),
                   ),
-                  if (stream.size != null)
-                    Text('💾 ${stream.size}',
-                        style: const TextStyle(
-                            color: Colors.white38, fontSize: 11)),
+                  Row(
+                    children: [
+                      if (!stream.isEmbed)
+                        const Text('🧲 P2P  ',
+                            style: TextStyle(
+                                color: Colors.white38, fontSize: 11)),
+                      if (stream.isEmbed)
+                        const Text('▶ Direct Stream  ',
+                            style: TextStyle(
+                                color: Colors.white38, fontSize: 11)),
+                      if (stream.size != null)
+                        Text('💾 ${stream.size}',
+                            style: const TextStyle(
+                                color: Colors.white38, fontSize: 11)),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -261,8 +298,7 @@ class _StreamTile extends StatelessWidget {
 
             // Quality badge
             Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
               decoration: BoxDecoration(
                 color: qualColor.withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(8),
