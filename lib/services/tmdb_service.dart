@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../constants/app_constants.dart';
 import '../models/media_model.dart';
@@ -12,7 +13,6 @@ class TmdbService {
     'accept': 'application/json',
   };
 
-  // Always use en-US for titles — no Hindi translated titles
   static Future<Map<String, dynamic>> _get(String path,
       [Map<String, String>? params]) async {
     final uri = Uri.parse('$_base$path').replace(queryParameters: {
@@ -26,7 +26,6 @@ class TmdbService {
     throw Exception('TMDB error ${res.statusCode}: $path');
   }
 
-  // ── Trending in India ─────────────────────────────────────────────────────
   static Future<List<MediaItem>> getTrending() async {
     final data = await _get('/trending/all/week', {'region': 'IN'});
     return (data['results'] as List)
@@ -34,7 +33,6 @@ class TmdbService {
         .toList();
   }
 
-  // ── Hindi Original Movies ─────────────────────────────────────────────────
   static Future<List<MediaItem>> getHindiMovies({int page = 1}) async {
     final data = await _get('/discover/movie', {
       'with_original_language': 'hi',
@@ -46,7 +44,6 @@ class TmdbService {
         .toList();
   }
 
-  // ── Hindi Shows ───────────────────────────────────────────────────────────
   static Future<List<MediaItem>> getHindiShows({int page = 1}) async {
     final data = await _get('/discover/tv', {
       'with_original_language': 'hi',
@@ -58,7 +55,6 @@ class TmdbService {
         .toList();
   }
 
-  // ── New Bollywood 2025 ────────────────────────────────────────────────────
   static Future<List<MediaItem>> getNewBollywood() async {
     final data = await _get('/discover/movie', {
       'with_original_language': 'hi',
@@ -70,7 +66,6 @@ class TmdbService {
         .toList();
   }
 
-  // ── South Hindi Dubbed ────────────────────────────────────────────────────
   static Future<List<MediaItem>> getSouthDubbed() async {
     final data = await _get('/discover/movie', {
       'with_original_language': 'te,ta,ml,kn',
@@ -81,7 +76,6 @@ class TmdbService {
         .toList();
   }
 
-  // ── Hollywood Hindi Dubbed ────────────────────────────────────────────────
   static Future<List<MediaItem>> getHindiDubbedHollywood() async {
     final data = await _get('/discover/movie', {
       'sort_by': 'popularity.desc',
@@ -94,7 +88,6 @@ class TmdbService {
         .toList();
   }
 
-  // ── Animated Hindi Dubbed ─────────────────────────────────────────────────
   static Future<List<MediaItem>> getHindiDubbedAnimated() async {
     final data = await _get('/discover/movie', {
       'with_genres': '16',
@@ -106,7 +99,6 @@ class TmdbService {
         .toList();
   }
 
-  // ── Search ────────────────────────────────────────────────────────────────
   static Future<List<MediaItem>> search(String query) async {
     final data = await _get('/search/multi', {'query': query});
     return (data['results'] as List)
@@ -115,7 +107,6 @@ class TmdbService {
         .toList();
   }
 
-  // ── Details ───────────────────────────────────────────────────────────────
   static Future<MediaDetails> getDetails(int id, String type) async {
     final data = await _get('/$type/$id', {
       'append_to_response': 'credits,external_ids,seasons',
@@ -123,7 +114,6 @@ class TmdbService {
     return MediaDetails.fromJson(data, type);
   }
 
-  // ── Season Episodes ───────────────────────────────────────────────────────
   static Future<List<Episode>> getEpisodes(int tvId, int season) async {
     final data = await _get('/tv/$tvId/season/$season');
     return (data['episodes'] as List)
@@ -131,11 +121,9 @@ class TmdbService {
         .toList();
   }
 
-  // ── IMDB ID — CRITICAL: use separate call WITHOUT language param ──────────
+  // CRITICAL: No language param — external_ids doesn't need it
   static Future<String?> getImdbId(int tmdbId, String type) async {
     try {
-      // No language param here — external_ids doesn't need it
-      // and hi-IN was causing this to fail silently
       final uri = Uri.parse('$_base/$type/$tmdbId/external_ids');
       final res = await _client
           .get(uri, headers: _headers)
@@ -143,19 +131,13 @@ class TmdbService {
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
         final imdbId = data['imdb_id'];
-        debugPrint('IMDB ID for $tmdbId: $imdbId');
+        debugPrint('[InFlex] IMDB ID for $tmdbId: $imdbId');
         return imdbId;
       }
       return null;
     } catch (e) {
-      debugPrint('getImdbId error: $e');
+      debugPrint('[InFlex] getImdbId error: $e');
       return null;
     }
   }
-}
-
-// ignore: unused_import
-void debugPrint(String msg) {
-  // ignore: avoid_print
-  print('[InFlex] $msg');
 }
