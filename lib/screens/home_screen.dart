@@ -16,9 +16,21 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  int _tab = 0; // 0=Home, 1=Movies, 2=Shows, 3=Watchlist
+  int _tab = 0;
   bool _searching = false;
   final _searchCtrl = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    // Reload if data didn't come through from splash
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final provider = context.read<TmdbProvider>();
+      if (provider.trending.isEmpty && provider.hindiMovies.isEmpty && !provider.loading) {
+        provider.loadHome();
+      }
+    });
+  }
 
   @override
   void dispose() {
@@ -200,6 +212,36 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (_tab == 3) return const WatchlistScreen();
+
+    // Show error + retry if everything failed to load
+    if (provider.error != null && provider.trending.isEmpty && provider.hindiMovies.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.wifi_off_rounded, color: Colors.white24, size: 56),
+            const SizedBox(height: 16),
+            const Text('Could not load content',
+                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 8),
+            Text(provider.error!,
+                style: const TextStyle(color: Colors.white38, fontSize: 11),
+                textAlign: TextAlign.center),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFFFCC00),
+                foregroundColor: Colors.black,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Retry', style: TextStyle(fontWeight: FontWeight.w800)),
+              onPressed: () => provider.loadHome(),
+            ),
+          ],
+        ),
+      );
+    }
 
     final rows = _getRows(provider);
 
