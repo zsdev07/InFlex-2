@@ -5,13 +5,15 @@ class AppConstants {
   static const String tmdbBase = 'https://api.themoviedb.org/3';
   static const String imgBase = 'https://image.tmdb.org/t/p';
 
-  // Resolver
-  static const String resolverBase = 'https://zbro7-inflex-resolver.hf.space';
-
-  // Torrentio
+  // Stream Sources
   static const String torrentioBase = 'https://torrentio.strem.fun';
-  static const String torrentioFilter =
-      'sort=qualitysize|qualityfilter=480p,scr,cam';
+  static const String torrentioFilter = 'sort=qualitysize|qualityfilter=480p,scr,cam';
+
+  // Embed Sources (fallback scrapers)
+  static const String vidsrcBase = 'https://vidsrc.to';
+  static const String embedsuBase = 'https://embed.su';
+  static const String autoembedBase = 'https://autoembed.cc';
+  static const String twoEmbedBase = 'https://www.2embed.cc';
 
   // Image sizes
   static String poster(String? path, {String size = 'w342'}) =>
@@ -19,8 +21,6 @@ class AppConstants {
   static String backdrop(String? path) =>
       path != null ? '$imgBase/original$path' : '';
   static String posterSmall(String? path) =>
-      path != null ? '$imgBase/w185$path' : '';
-  static String avatar(String? path) =>
       path != null ? '$imgBase/w185$path' : '';
 
   // Colors
