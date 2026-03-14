@@ -180,6 +180,8 @@ class TorrentStream {
   final String quality;
   final String? size;
   final String streamUrl;
+  final String source;
+  final bool isEmbed;
 
   TorrentStream({
     required this.title,
@@ -188,5 +190,7 @@ class TorrentStream {
     required this.quality,
     this.size,
     required this.streamUrl,
+    this.source = 'Unknown',
+    this.isEmbed = false,
   });
 }
