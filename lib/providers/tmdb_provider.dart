@@ -8,6 +8,8 @@ class TmdbProvider extends ChangeNotifier {
   List<MediaItem> hindiShows = [];
   List<MediaItem> newBollywood = [];
   List<MediaItem> southDubbed = [];
+  List<MediaItem> hindiDubbedHollywood = [];
+  List<MediaItem> hindiDubbedAnimated = [];
   List<MediaItem> searchResults = [];
 
   bool loading = false;
@@ -25,14 +27,19 @@ class TmdbProvider extends ChangeNotifier {
         TmdbService.getHindiShows(),
         TmdbService.getNewBollywood(),
         TmdbService.getSouthDubbed(),
+        TmdbService.getHindiDubbedHollywood(),
+        TmdbService.getHindiDubbedAnimated(),
       ]);
       trending = results[0];
       hindiMovies = results[1];
       hindiShows = results[2];
       newBollywood = results[3];
       southDubbed = results[4];
+      hindiDubbedHollywood = results[5];
+      hindiDubbedAnimated = results[6];
     } catch (e) {
       error = e.toString();
+      debugPrint('TMDB load error: $e');
     }
     loading = false;
     notifyListeners();
