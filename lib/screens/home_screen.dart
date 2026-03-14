@@ -236,21 +236,25 @@ class _HomeScreenState extends State<HomeScreen> {
     switch (_tab) {
       case 0:
         return [
-          ('🔥 Trending', p.trending, const Color(0xFFFFCC00)),
+          ('🔥 Trending in India', p.trending, const Color(0xFFFFCC00)),
           ('🎬 Hindi Movies', p.hindiMovies, const Color(0xFFf59e0b)),
-          ('📺 Hindi Shows', p.hindiShows, const Color(0xFF3b82f6)),
-          ('🆕 New Bollywood', p.newBollywood, const Color(0xFF22c55e)),
+          ('📺 Hindi Web Series', p.hindiShows, const Color(0xFF3b82f6)),
+          ('🆕 New Bollywood 2025', p.newBollywood, const Color(0xFF22c55e)),
           ('🎭 South Dubbed', p.southDubbed, const Color(0xFFe11d48)),
+          ('🌍 Hollywood Hindi Dubbed', p.hindiDubbedHollywood, const Color(0xFF8b5cf6)),
+          ('🎨 Animated Hindi Dubbed', p.hindiDubbedAnimated, const Color(0xFFec4899)),
         ];
       case 1:
         return [
-          ('Hindi Movies', p.hindiMovies, const Color(0xFFFFCC00)),
-          ('New Bollywood', p.newBollywood, const Color(0xFF22c55e)),
-          ('South Dubbed', p.southDubbed, const Color(0xFFe11d48)),
+          ('🎬 Hindi Movies', p.hindiMovies, const Color(0xFFFFCC00)),
+          ('🆕 New Bollywood 2025', p.newBollywood, const Color(0xFF22c55e)),
+          ('🎭 South Dubbed', p.southDubbed, const Color(0xFFe11d48)),
+          ('🌍 Hollywood Hindi Dubbed', p.hindiDubbedHollywood, const Color(0xFF8b5cf6)),
+          ('🎨 Animated Hindi Dubbed', p.hindiDubbedAnimated, const Color(0xFFec4899)),
         ];
       case 2:
         return [
-          ('Hindi Shows', p.hindiShows, const Color(0xFFFFCC00)),
+          ('📺 Hindi Web Series', p.hindiShows, const Color(0xFFFFCC00)),
         ];
       default:
         return [];
