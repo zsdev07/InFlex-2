@@ -1,6 +1,7 @@
 class AppConstants {
   // TMDB
   static const String tmdbKey = '0e477a8908e5042e73a8db7f8cf3892d';
+  static const String tmdbReadToken = 'eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiIwZTQ3N2E4OTA4ZTUwNDJlNzNhOGRiN2Y4Y2YzODkyZCIsIm5iZiI6MTc3MzA2MzU1Mi40MDIsInN1YiI6IjY5YWVjZDgwZTE5ZjY1MWY3Y2MxY2I2ZCIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.vR9dMon_AwZ8EhBpBFdVqVYe3NxmAdStZaO5O7G_74I';
   static const String tmdbBase = 'https://api.themoviedb.org/3';
   static const String imgBase = 'https://image.tmdb.org/t/p';
 
