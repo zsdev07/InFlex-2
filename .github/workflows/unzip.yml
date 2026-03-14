@@ -2,7 +2,7 @@ name: Unzip
 on: 
   push:
     paths:
-      - 'Inflex_updated.zip' # Only runs when the zip file is updated
+      - 'InFlex_updated.zip' # Only runs when the zip file is updated
   workflow_dispatch: # Allows you to run it manually from the "Actions" tab
 
 jobs:
@@ -16,8 +16,8 @@ jobs:
 
       - name: Extract zip file
         run: |
-          unzip -o Inflex_updated.zip -d .
-          rm Inflex_updated.zip # Optional: removes zip after extraction
+          unzip -o InFlex_updated.zip -d .
+          rm InFlex_updated.zip # Optional: removes zip after extraction
 
       - name: Commit and Push changes
         run: |
