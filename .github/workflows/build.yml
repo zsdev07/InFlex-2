@@ -1,0 +1,66 @@
+name: InFlex Flutter Build
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    name: Build APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.0'
+          channel: 'stable'
+          cache: true
+
+      - name: Flutter Version Info
+        run: flutter --version
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Run Build Runner
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos
+        continue-on-error: true
+
+      - name: Build Split APKs
+        run: flutter build apk --release --split-per-abi
+
+      - name: Build Fat APK
+        run: flutter build apk --release
+
+      - name: Rename APKs
+        run: |
+          cd build/app/outputs/flutter-apk/
+          VERSION=$(grep 'version:' ../../../../pubspec.yaml | head -1 | awk '{print $2}' | cut -d'+' -f1)
+          [ -f app-arm64-v8a-release.apk ]   && mv app-arm64-v8a-release.apk   InFlex-v${VERSION}-arm64.apk
+          [ -f app-armeabi-v7a-release.apk ] && mv app-armeabi-v7a-release.apk InFlex-v${VERSION}-arm32.apk
+          [ -f app-x86_64-release.apk ]      && mv app-x86_64-release.apk      InFlex-v${VERSION}-x86_64.apk
+          [ -f app-release.apk ]             && mv app-release.apk             InFlex-v${VERSION}-universal.apk
+          ls -lh *.apk
+
+      - name: Upload APK Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: InFlex-APKs
+          path: build/app/outputs/flutter-apk/*.apk
+          retention-days: 30
