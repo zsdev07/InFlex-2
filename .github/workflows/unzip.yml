@@ -1,8 +1,9 @@
 name: Unzip
 
 on:
+  push:
     paths:
-      - 'Inflex_updated.zip'
+      - "Inflex_updated.zip"
   workflow_dispatch:
 
 jobs:
