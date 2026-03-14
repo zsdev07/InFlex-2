@@ -1,7 +1,6 @@
 name: Unzip
 
 on:
-  push:
     paths:
       - 'Inflex_updated.zip'
   workflow_dispatch:
@@ -11,13 +10,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      workflows: write  # Required to push .github/workflows/ files
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_TOKEN }}
 
       - name: Extract zip file
         run: |
