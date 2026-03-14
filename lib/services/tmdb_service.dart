@@ -6,34 +6,39 @@ import '../models/media_model.dart';
 class TmdbService {
   static final _client = http.Client();
   static const _base = AppConstants.tmdbBase;
-  static const _key = AppConstants.tmdbKey;
+
+  // Use Bearer token instead of api_key param — more reliable + higher rate limits
+  static const _headers = {
+    'Authorization': 'Bearer ${AppConstants.tmdbReadToken}',
+    'accept': 'application/json',
+  };
 
   static Future<Map<String, dynamic>> _get(String path,
       [Map<String, String>? params]) async {
     final uri = Uri.parse('$_base$path').replace(queryParameters: {
-      'api_key': _key,
-      'language': 'en-IN',
+      'language': 'hi-IN', // Hindi language for dubbed titles
       ...?params,
     });
-    final res = await _client.get(uri);
+    final res = await _client
+        .get(uri, headers: _headers)
+        .timeout(const Duration(seconds: 10));
     if (res.statusCode == 200) return jsonDecode(res.body);
     throw Exception('TMDB error ${res.statusCode}: $path');
   }
 
-  // ── Trending ──────────────────────────────────────────────────────────────
+  // ── Trending in India ─────────────────────────────────────────────────────
   static Future<List<MediaItem>> getTrending({String time = 'week'}) async {
-    final data = await _get('/trending/all/$time');
+    final data = await _get('/trending/all/$time', {'region': 'IN'});
     return (data['results'] as List)
         .map((j) => MediaItem.fromJson(j))
         .toList();
   }
 
-  // ── Hindi Movies ──────────────────────────────────────────────────────────
+  // ── Hindi Original Movies ─────────────────────────────────────────────────
   static Future<List<MediaItem>> getHindiMovies({int page = 1}) async {
     final data = await _get('/discover/movie', {
       'with_original_language': 'hi',
       'sort_by': 'popularity.desc',
-      'region': 'IN',
       'page': '$page',
     });
     return (data['results'] as List)
@@ -41,7 +46,7 @@ class TmdbService {
         .toList();
   }
 
-  // ── Hindi Shows ───────────────────────────────────────────────────────────
+  // ── Hindi Original Shows ──────────────────────────────────────────────────
   static Future<List<MediaItem>> getHindiShows({int page = 1}) async {
     final data = await _get('/discover/tv', {
       'with_original_language': 'hi',
@@ -53,13 +58,27 @@ class TmdbService {
         .toList();
   }
 
-  // ── New Bollywood ─────────────────────────────────────────────────────────
+  // ── New Bollywood 2025 ────────────────────────────────────────────────────
   static Future<List<MediaItem>> getNewBollywood() async {
     final data = await _get('/discover/movie', {
       'with_original_language': 'hi',
       'sort_by': 'release_date.desc',
+      'primary_release_year': '2025',
+    });
+    return (data['results'] as List)
+        .map((j) => MediaItem.fromJson(j, type: 'movie'))
+        .toList();
+  }
+
+  // ── Hindi Dubbed Hollywood ────────────────────────────────────────────────
+  // These are English/other movies that are popular in India with Hindi dub
+  static Future<List<MediaItem>> getHindiDubbedHollywood() async {
+    final data = await _get('/discover/movie', {
+      'sort_by': 'popularity.desc',
+      'with_original_language': 'en',
       'region': 'IN',
-      'primary_release_year': '2024',
+      'with_release_type': '3|2',
+      'vote_count.gte': '500', // Only well-known movies
     });
     return (data['results'] as List)
         .map((j) => MediaItem.fromJson(j, type: 'movie'))
@@ -67,12 +86,23 @@ class TmdbService {
   }
 
   // ── South Hindi Dubbed ────────────────────────────────────────────────────
+  // Telugu, Tamil, Malayalam, Kannada — all dubbed in Hindi
   static Future<List<MediaItem>> getSouthDubbed() async {
     final data = await _get('/discover/movie', {
-      'with_original_language': 'te|ta|ml|kn',
+      'with_original_language': 'te,ta,ml,kn',
       'sort_by': 'popularity.desc',
-      'with_release_type': '3|2',
-      'region': 'IN',
+    });
+    return (data['results'] as List)
+        .map((j) => MediaItem.fromJson(j, type: 'movie'))
+        .toList();
+  }
+
+  // ── Hindi Dubbed Animated (Kung Fu Panda etc) ─────────────────────────────
+  static Future<List<MediaItem>> getHindiDubbedAnimated() async {
+    final data = await _get('/discover/movie', {
+      'with_genres': '16', // Animation genre ID
+      'sort_by': 'popularity.desc',
+      'vote_count.gte': '200',
     });
     return (data['results'] as List)
         .map((j) => MediaItem.fromJson(j, type: 'movie'))
