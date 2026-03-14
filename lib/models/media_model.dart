@@ -179,6 +179,7 @@ class TorrentStream {
   final int? fileIdx;
   final String quality;
   final String? size;
+  final int? seeds;
   final String streamUrl;
   final String source;
   final bool isEmbed;
@@ -189,6 +190,7 @@ class TorrentStream {
     this.fileIdx,
     required this.quality,
     this.size,
+    this.seeds,
     required this.streamUrl,
     this.source = 'Unknown',
     this.isEmbed = false,
