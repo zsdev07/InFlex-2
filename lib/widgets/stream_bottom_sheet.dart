@@ -2,8 +2,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../models/media_model.dart';
 import '../services/tmdb_service.dart';
-import '../services/stream_service.dart';
-import '../screens/player_screen.dart';
+import '../services/inflex_resolver_service.dart';
+import '../screens/resolver_screen.dart';
 
 class StreamBottomSheet extends StatefulWidget {
   final MediaItem item;
@@ -37,6 +37,7 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
 
   Future<void> _fetchStreams() async {
     setState(() { _loading = true; _error = null; });
+
     try {
       // Get IMDB ID
       String? imdbId = widget.imdbId;
@@ -47,18 +48,18 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
         );
       }
       _imdbId = imdbId;
-      debugPrint('[InFlex] IMDB ID: $imdbId for TMDB: ${widget.item.id}');
+      debugPrint('[InFlex] IMDB: $imdbId | TMDB: ${widget.item.id}');
 
       if (imdbId == null || imdbId.isEmpty) {
         setState(() {
-          _error = 'Could not find IMDB ID.\nTMDB ID: ${widget.item.id}';
+          _error = 'Could not find IMDB ID for this title.\nTMDB ID: ${widget.item.id}';
           _loading = false;
         });
         return;
       }
 
-      final streams = await StreamService.getAllStreams(
-        tmdbId: widget.item.id,
+      // Get streams from InFlex Resolver (filtered Torrentio)
+      final streams = await InFlexResolverService.getStreams(
         imdbId: imdbId,
         type: widget.item.mediaType,
         season: widget.season,
@@ -69,7 +70,7 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
         _streams = streams;
         _loading = false;
         if (streams.isEmpty) {
-          _error = 'No streams found yet.\nTry again in a moment.';
+          _error = 'No streams found for this title.\nIt may not be available yet.';
         }
       });
     } catch (e) {
@@ -80,18 +81,17 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
     }
   }
 
-  void _playStream(TorrentStream stream) {
+  void _selectStream(TorrentStream stream) {
     Navigator.pop(context);
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => PlayerScreen(
-          streamUrl: stream.streamUrl,
-          title: widget.item.title,
-          subtitle: widget.episode != null
-              ? 'S${widget.season}:E${widget.episode}'
-              : null,
-          isEmbed: stream.isEmbed,
+        builder: (_) => ResolverScreen(
+          infoHash: stream.infoHash,
+          fileIdx: stream.fileIdx ?? 0,
+          movieTitle: widget.item.title,
+          quality: stream.quality,
+          imdbId: _imdbId ?? widget.item.id.toString(),
         ),
       ),
     );
@@ -108,6 +108,7 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          // Handle
           Container(
             width: 40, height: 4,
             decoration: BoxDecoration(
@@ -116,13 +117,15 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
             ),
           ),
           const SizedBox(height: 16),
+
+          // Header
           Row(
             children: [
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('SELECT SOURCE',
+                    const Text('SELECT QUALITY',
                         style: TextStyle(
                             color: Color(0xFFFFCC00),
                             fontSize: 10,
@@ -155,22 +158,50 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
           ),
           const SizedBox(height: 12),
 
+          // InFlex resolver badge
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFCC00).withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                  color: const Color(0xFFFFCC00).withValues(alpha: 0.15)),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.rocket_launch_rounded,
+                    color: Color(0xFFFFCC00), size: 16),
+                SizedBox(width: 8),
+                Text(
+                  'Powered by InFlex Resolver — cached streams play instantly ⚡',
+                  style: TextStyle(
+                      color: Color(0xFFFFCC00),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // Content
           if (_loading)
             const Padding(
-              padding: EdgeInsets.symmetric(vertical: 32),
+              padding: EdgeInsets.symmetric(vertical: 28),
               child: Column(
                 children: [
                   CircularProgressIndicator(
                       color: Color(0xFFFFCC00), strokeWidth: 2),
                   SizedBox(height: 12),
-                  Text('Searching all sources…',
+                  Text('Finding best streams…',
                       style: TextStyle(color: Colors.white38, fontSize: 13)),
                 ],
               ),
             )
           else if (_streams.isEmpty)
             Padding(
-              padding: const EdgeInsets.symmetric(vertical: 24),
+              padding: const EdgeInsets.symmetric(vertical: 20),
               child: Column(
                 children: [
                   const Icon(Icons.search_off_rounded,
@@ -179,7 +210,8 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
                   Text(
                     _error ?? 'No streams found.',
                     textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.white38, fontSize: 13),
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 13),
                   ),
                   const SizedBox(height: 16),
                   ElevatedButton.icon(
@@ -200,7 +232,7 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
           else
             ConstrainedBox(
               constraints: BoxConstraints(
-                maxHeight: MediaQuery.of(context).size.height * 0.55,
+                maxHeight: MediaQuery.of(context).size.height * 0.5,
               ),
               child: ListView.separated(
                 shrinkWrap: true,
@@ -208,7 +240,7 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
                 separatorBuilder: (_, __) => const SizedBox(height: 8),
                 itemBuilder: (_, i) => _StreamTile(
                   stream: _streams[i],
-                  onTap: () => _playStream(_streams[i]),
+                  onTap: () => _selectStream(_streams[i]),
                 ),
               ),
             ),
@@ -225,7 +257,11 @@ class _StreamTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final qualColor = Color(StreamService.qualityColor(stream.quality));
+    final is1080 = stream.quality.contains('1080');
+    final qualColor = is1080
+        ? const Color(0xFF3b82f6)
+        : const Color(0xFF22c55e);
+
     return GestureDetector(
       onTap: onTap,
       child: Container(
@@ -237,26 +273,25 @@ class _StreamTile extends StatelessWidget {
         ),
         child: Row(
           children: [
+            // Icon
             Container(
-              width: 40, height: 40,
+              width: 44, height: 44,
               decoration: BoxDecoration(
-                color: qualColor.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(10),
+                color: qualColor.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
               ),
-              child: Icon(
-                stream.isEmbed
-                    ? Icons.play_circle_outline_rounded
-                    : Icons.downloading_rounded,
-                color: qualColor, size: 22,
-              ),
+              child: Icon(Icons.play_circle_filled_rounded,
+                  color: qualColor, size: 26),
             ),
             const SizedBox(width: 12),
+
+            // Info
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    stream.isEmbed ? stream.source : stream.title,
+                    stream.title.isNotEmpty ? stream.title : stream.quality,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
@@ -266,36 +301,41 @@ class _StreamTile extends StatelessWidget {
                   ),
                   Row(
                     children: [
-                      Text(
-                        stream.isEmbed ? '▶ Direct  ' : '🧲 P2P  ',
-                        style: const TextStyle(
-                            color: Colors.white38, fontSize: 11),
-                      ),
+                      const Text('🧲 Torrent  ',
+                          style: TextStyle(
+                              color: Colors.white38, fontSize: 11)),
                       if (stream.size != null)
                         Text('💾 ${stream.size}  ',
                             style: const TextStyle(
                                 color: Colors.white38, fontSize: 11)),
-                      if (stream.seeds != null)
+                      if ((stream.seeds ?? 0) > 0)
                         Text('👤 ${stream.seeds}',
-                            style: const TextStyle(
-                                color: Colors.white38, fontSize: 11)),
+                            style: TextStyle(
+                                color: (stream.seeds ?? 0) > 10
+                                    ? const Color(0xFF22c55e)
+                                    : Colors.white38,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600)),
                     ],
                   ),
                 ],
               ),
             ),
-            const SizedBox(width: 8),
+
+            // Quality badge
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
                 color: qualColor.withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: Text(stream.quality,
-                  style: TextStyle(
-                      color: qualColor,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w800)),
+              child: Text(
+                stream.quality,
+                style: TextStyle(
+                    color: qualColor,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800),
+              ),
             ),
             const SizedBox(width: 6),
             const Icon(Icons.chevron_right, color: Colors.white24, size: 20),
