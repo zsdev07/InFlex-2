@@ -1,0 +1,97 @@
+name: InFlex Flutter Build
+
+on:
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch: # Manual trigger from GitHub UI
+
+jobs:
+  build-apk:
+    name: Build APK
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout code ───────────────────────────────────────────────────
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # ── 2. Setup Java (required for Android build) ─────────────────────────
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # ── 3. Setup Flutter ───────────────────────────────────────────────────
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.0'
+          channel: 'stable'
+          cache: true
+
+      # ── 4. Show Flutter version ────────────────────────────────────────────
+      - name: Flutter Version Info
+        run: flutter --version
+
+      # ── 5. Get dependencies ────────────────────────────────────────────────
+      - name: Install Dependencies
+        run: flutter pub get
+
+      # ── 6. Run code generation (for Hive) ──────────────────────────────────
+      - name: Run Build Runner
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      # ── 7. Analyze code ────────────────────────────────────────────────────
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos
+        continue-on-error: true
+
+      # ── 8. Build APK (release, all ABIs) ──────────────────────────────────
+      - name: Build APK
+        run: flutter build apk --release --split-per-abi
+
+      # ── 9. Build fat APK (single file, works on all devices) ──────────────
+      - name: Build Fat APK
+        run: flutter build apk --release
+
+      # ── 10. Rename APKs nicely ─────────────────────────────────────────────
+      - name: Rename APK files
+        run: |
+          cd build/app/outputs/flutter-apk/
+          # Get version from pubspec
+          VERSION=$(grep 'version:' ../../../../pubspec.yaml | head -1 | awk '{print $2}' | cut -d'+' -f1)
+          echo "Version: $VERSION"
+
+          # Rename split APKs
+          [ -f app-arm64-v8a-release.apk ]   && mv app-arm64-v8a-release.apk   InFlex-v${VERSION}-arm64.apk
+          [ -f app-armeabi-v7a-release.apk ] && mv app-armeabi-v7a-release.apk InFlex-v${VERSION}-arm32.apk
+          [ -f app-x86_64-release.apk ]      && mv app-x86_64-release.apk      InFlex-v${VERSION}-x86_64.apk
+          [ -f app-release.apk ]             && mv app-release.apk             InFlex-v${VERSION}-universal.apk
+
+          echo "📦 Built APKs:"
+          ls -lh *.apk
+
+      # ── 11. Upload ALL APKs as artifacts ───────────────────────────────────
+      - name: Upload APK Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: InFlex-APKs
+          path: build/app/outputs/flutter-apk/*.apk
+          retention-days: 30
+
+      # ── 12. Print download instructions ────────────────────────────────────
+      - name: Build Summary
+        run: |
+          echo "✅ BUILD SUCCESSFUL"
+          echo ""
+          echo "📱 APK Files:"
+          ls -lh build/app/outputs/flutter-apk/*.apk
+          echo ""
+          echo "📥 Download from:"
+          echo "   GitHub → Actions tab → This workflow run → Artifacts section"
+          echo ""
+          echo "📌 Install on Android:"
+          echo "   arm64  → Most modern phones (2018+)"
+          echo "   arm32  → Older phones"
+          echo "   universal → Works on ALL devices (larger file)"
