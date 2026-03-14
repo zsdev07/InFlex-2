@@ -1,6 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import '../providers/tmdb_provider.dart';
 import 'home_screen.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -25,26 +23,18 @@ class _SplashScreenState extends State<SplashScreen>
     _fadeAnim = CurvedAnimation(parent: _ctrl, curve: Curves.easeIn);
     _ctrl.forward();
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _init();
+    // Just wait 2 seconds — HomeScreen loads data itself
+    Future.delayed(const Duration(seconds: 2), () {
+      if (!mounted) return;
+      Navigator.of(context).pushReplacement(
+        PageRouteBuilder(
+          pageBuilder: (_, __, ___) => const HomeScreen(),
+          transitionDuration: const Duration(milliseconds: 500),
+          transitionsBuilder: (_, anim, __, child) =>
+              FadeTransition(opacity: anim, child: child),
+        ),
+      );
     });
-  }
-
-  Future<void> _init() async {
-    // Minimum 2 second splash
-    await Future.wait([
-      context.read<TmdbProvider>().loadHome(),
-      Future.delayed(const Duration(seconds: 2)),
-    ]);
-    if (!mounted) return;
-    Navigator.of(context).pushReplacement(
-      PageRouteBuilder(
-        pageBuilder: (_, __, ___) => const HomeScreen(),
-        transitionDuration: const Duration(milliseconds: 500),
-        transitionsBuilder: (_, anim, __, child) =>
-            FadeTransition(opacity: anim, child: child),
-      ),
-    );
   }
 
   @override
