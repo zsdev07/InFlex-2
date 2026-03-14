@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../models/media_model.dart';
 import '../services/tmdb_service.dart';
@@ -35,6 +36,7 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
   }
 
   Future<void> _fetchStreams() async {
+    setState(() { _loading = true; _error = null; });
     try {
       // Get IMDB ID
       String? imdbId = widget.imdbId;
@@ -45,18 +47,18 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
         );
       }
       _imdbId = imdbId;
+      debugPrint('[InFlex] IMDB ID: $imdbId for TMDB: ${widget.item.id}');
 
       if (imdbId == null || imdbId.isEmpty) {
         setState(() {
-          _error = 'Could not find IMDB ID.\nThis title may not be indexed yet.';
+          _error = 'Could not find IMDB ID.\nTMDB ID: ${widget.item.id}';
           _loading = false;
         });
         return;
       }
 
-      print('[InFlex] Fetching streams for IMDB: $imdbId');
-
       final streams = await StreamService.getAllStreams(
+        tmdbId: widget.item.id,
         imdbId: imdbId,
         type: widget.item.mediaType,
         season: widget.season,
@@ -67,12 +69,12 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
         _streams = streams;
         _loading = false;
         if (streams.isEmpty) {
-          _error = 'No streams found for this title yet.\nTry again later.';
+          _error = 'No streams found yet.\nTry again in a moment.';
         }
       });
     } catch (e) {
       setState(() {
-        _error = 'Failed to load streams.\n$e';
+        _error = 'Error: $e';
         _loading = false;
       });
     }
@@ -106,7 +108,6 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Handle
           Container(
             width: 40, height: 4,
             decoration: BoxDecoration(
@@ -115,8 +116,6 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
             ),
           ),
           const SizedBox(height: 16),
-
-          // Header
           Row(
             children: [
               Expanded(
@@ -142,7 +141,7 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
                       overflow: TextOverflow.ellipsis,
                     ),
                     if (_imdbId != null)
-                      Text(_imdbId!,
+                      Text('IMDB: $_imdbId',
                           style: const TextStyle(
                               color: Colors.white24, fontSize: 10)),
                   ],
@@ -156,7 +155,6 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
           ),
           const SizedBox(height: 12),
 
-          // Content
           if (_loading)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 32),
@@ -181,8 +179,7 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
                   Text(
                     _error ?? 'No streams found.',
                     textAlign: TextAlign.center,
-                    style: const TextStyle(
-                        color: Colors.white38, fontSize: 13),
+                    style: const TextStyle(color: Colors.white38, fontSize: 13),
                   ),
                   const SizedBox(height: 16),
                   ElevatedButton.icon(
@@ -195,10 +192,7 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
                     icon: const Icon(Icons.refresh_rounded),
                     label: const Text('Retry',
                         style: TextStyle(fontWeight: FontWeight.w800)),
-                    onPressed: () {
-                      setState(() { _loading = true; _error = null; });
-                      _fetchStreams();
-                    },
+                    onPressed: _fetchStreams,
                   ),
                 ],
               ),
@@ -232,7 +226,6 @@ class _StreamTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final qualColor = Color(StreamService.qualityColor(stream.quality));
-
     return GestureDetector(
       onTap: onTap,
       child: Container(
@@ -244,24 +237,20 @@ class _StreamTile extends StatelessWidget {
         ),
         child: Row(
           children: [
-            // Icon
             Container(
               width: 40, height: 40,
               decoration: BoxDecoration(
-                color: qualColor.withValues(alpha: 0.1),
+                color: qualColor.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: Icon(
                 stream.isEmbed
                     ? Icons.play_circle_outline_rounded
                     : Icons.downloading_rounded,
-                color: qualColor,
-                size: 22,
+                color: qualColor, size: 22,
               ),
             ),
             const SizedBox(width: 12),
-
-            // Info
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -277,16 +266,17 @@ class _StreamTile extends StatelessWidget {
                   ),
                   Row(
                     children: [
-                      if (!stream.isEmbed)
-                        const Text('🧲 P2P  ',
-                            style: TextStyle(
-                                color: Colors.white38, fontSize: 11)),
-                      if (stream.isEmbed)
-                        const Text('▶ Direct Stream  ',
-                            style: TextStyle(
-                                color: Colors.white38, fontSize: 11)),
+                      Text(
+                        stream.isEmbed ? '▶ Direct  ' : '🧲 P2P  ',
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 11),
+                      ),
                       if (stream.size != null)
-                        Text('💾 ${stream.size}',
+                        Text('💾 ${stream.size}  ',
+                            style: const TextStyle(
+                                color: Colors.white38, fontSize: 11)),
+                      if (stream.seeds != null)
+                        Text('👤 ${stream.seeds}',
                             style: const TextStyle(
                                 color: Colors.white38, fontSize: 11)),
                     ],
@@ -294,24 +284,20 @@ class _StreamTile extends StatelessWidget {
                 ],
               ),
             ),
-            const SizedBox(width: 10),
-
-            // Quality badge
+            const SizedBox(width: 8),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
               decoration: BoxDecoration(
                 color: qualColor.withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: Text(
-                stream.quality,
-                style: TextStyle(
-                    color: qualColor,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w800),
-              ),
+              child: Text(stream.quality,
+                  style: TextStyle(
+                      color: qualColor,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800)),
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: 6),
             const Icon(Icons.chevron_right, color: Colors.white24, size: 20),
           ],
         ),
