@@ -1,28 +1,33 @@
 name: Unzip
-on: 
+
+on:
   push:
     paths:
-      - 'InFlex_updated.zip' # Only runs when the zip file is updated
-  workflow_dispatch: # Allows you to run it manually from the "Actions" tab
+      - 'Inflex_updated.zip'
+  workflow_dispatch:
 
 jobs:
   unzip-and-commit:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Allows the action to push changes back
+      contents: write
+      workflows: write  # Required to push .github/workflows/ files
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract zip file
         run: |
-          unzip -o InFlex_updated.zip -d .
-          rm InFlex_updated.zip # Optional: removes zip after extraction
+          unzip -o Inflex_updated.zip
+          rm -rf Inflex_updated.zip
 
       - name: Commit and Push changes
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add .
-          git commit -m "Auto-unzipped InFlex.zip" || echo "No changes to commit"
+          git add -A
+          git commit -m "chore: unzip and setup InFlex project" || echo "No changes to commit"
           git push
