@@ -1,3 +1,7 @@
+// ── Media Models ─────────────────────────────────────────────────────────────
+// No changes to MediaItem, MediaDetails, Genre, CastMember, Season, Episode.
+// TorrentStream gains an optional magnetLink field used by DebridResolverScreen.
+
 class MediaItem {
   final int id;
   final String title;
@@ -132,7 +136,11 @@ class CastMember {
   final String name;
   final String? profilePath;
   final String? character;
-  CastMember({required this.id, required this.name, this.profilePath, this.character});
+  CastMember(
+      {required this.id,
+      required this.name,
+      this.profilePath,
+      this.character});
   factory CastMember.fromJson(Map<String, dynamic> j) => CastMember(
         id: j['id'],
         name: j['name'] ?? '',
@@ -146,7 +154,11 @@ class Season {
   final String name;
   final int episodeCount;
   final String? posterPath;
-  Season({required this.seasonNumber, required this.name, required this.episodeCount, this.posterPath});
+  Season(
+      {required this.seasonNumber,
+      required this.name,
+      required this.episodeCount,
+      this.posterPath});
   factory Season.fromJson(Map<String, dynamic> j) => Season(
         seasonNumber: j['season_number'] ?? 0,
         name: j['name'] ?? 'Season',
@@ -162,7 +174,13 @@ class Episode {
   final String? overview;
   final String? stillPath;
   final double voteAverage;
-  Episode({required this.id, required this.episodeNumber, required this.name, this.overview, this.stillPath, this.voteAverage = 0});
+  Episode(
+      {required this.id,
+      required this.episodeNumber,
+      required this.name,
+      this.overview,
+      this.stillPath,
+      this.voteAverage = 0});
   factory Episode.fromJson(Map<String, dynamic> j) => Episode(
         id: j['id'],
         episodeNumber: j['episode_number'] ?? 0,
@@ -172,6 +190,11 @@ class Episode {
         voteAverage: (j['vote_average'] ?? 0).toDouble(),
       );
 }
+
+// ── TorrentStream ─────────────────────────────────────────────────────────────
+// Added: magnetLink — the full magnet URI built from infoHash + trackers.
+// The DebridResolverScreen uses this to tell the debrid bot what to leech.
+// StreamService sets this automatically; you never need to construct it manually.
 
 class TorrentStream {
   final String title;
@@ -184,6 +207,10 @@ class TorrentStream {
   final String source;
   final bool isEmbed;
 
+  /// Full magnet URI — populated by StreamService for non-embed sources.
+  /// null for embed/WebView sources where infoHash is empty.
+  final String? magnetLink;
+
   TorrentStream({
     required this.title,
     required this.infoHash,
@@ -194,5 +221,6 @@ class TorrentStream {
     required this.streamUrl,
     this.source = 'Unknown',
     this.isEmbed = false,
+    this.magnetLink,
   });
 }
