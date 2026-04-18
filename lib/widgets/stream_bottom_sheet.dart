@@ -2,8 +2,18 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../models/media_model.dart';
 import '../services/tmdb_service.dart';
-import '../services/inflex_resolver_service.dart';
-import '../screens/resolver_screen.dart';
+import '../services/stream_service.dart';
+import '../screens/debrid_resolver_screen.dart';
+import '../screens/player_screen.dart';
+
+/// ── StreamBottomSheet ─────────────────────────────────────────────────────
+///
+/// Fetches torrent streams via Torrentio (StreamService), then shows a
+/// selectable list. On selection:
+///   • Debrid sources (infoHash present) → DebridResolverScreen
+///   • Embed sources (isEmbed=true)      → PlayerScreen (WebView)
+///
+/// The old InFlexResolverService is fully removed here.
 
 class StreamBottomSheet extends StatefulWidget {
   final MediaItem item;
@@ -36,10 +46,13 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
   }
 
   Future<void> _fetchStreams() async {
-    setState(() { _loading = true; _error = null; });
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
 
     try {
-      // Get IMDB ID
+      // Resolve IMDB ID
       String? imdbId = widget.imdbId;
       if (imdbId == null || imdbId.isEmpty) {
         imdbId = await TmdbService.getImdbId(
@@ -52,14 +65,15 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
 
       if (imdbId == null || imdbId.isEmpty) {
         setState(() {
-          _error = 'Could not find IMDB ID for this title.\nTMDB ID: ${widget.item.id}';
+          _error = 'Could not find IMDB ID.\nTMDB ID: ${widget.item.id}';
           _loading = false;
         });
         return;
       }
 
-      // Get streams from InFlex Resolver (filtered Torrentio)
-      final streams = await InFlexResolverService.getStreams(
+      // Fetch streams — Torrentio + embed fallbacks (no old resolver)
+      final streams = await StreamService.getAllStreams(
+        tmdbId: widget.item.id,
         imdbId: imdbId,
         type: widget.item.mediaType,
         season: widget.season,
@@ -70,12 +84,13 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
         _streams = streams;
         _loading = false;
         if (streams.isEmpty) {
-          _error = 'No streams found for this title.\nIt may not be available yet.';
+          _error =
+              'No streams found for this title.\nIt may not be available yet.';
         }
       });
     } catch (e) {
       setState(() {
-        _error = 'Error: $e';
+        _error = 'Error fetching streams: $e';
         _loading = false;
       });
     }
@@ -83,167 +98,214 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
 
   void _selectStream(TorrentStream stream) {
     Navigator.pop(context);
+
+    if (stream.isEmbed) {
+      // Embed / WebView player — no debrid involved
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => PlayerScreen(
+            streamUrl: stream.streamUrl,
+            title: widget.item.title,
+            isEmbed: true,
+          ),
+        ),
+      );
+      return;
+    }
+
+    // Torrent source → Debrid flow
+    // magnetLink is pre-built by StreamService
+    final magnet = stream.magnetLink ??
+        'magnet:?xt=urn:btih:${stream.infoHash}';
+
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => ResolverScreen(
-          infoHash: stream.infoHash,
-          fileIdx: stream.fileIdx ?? 0,
+        builder: (_) => DebridResolverScreen(
+          imdbId: _imdbId ?? widget.item.id.toString(),
+          magnetLink: magnet,
           movieTitle: widget.item.title,
           quality: stream.quality,
-          imdbId: _imdbId ?? widget.item.id.toString(),
         ),
       ),
     );
   }
 
+  // ── BUILD ──────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: const BoxDecoration(
-        color: Color(0xFF0E0E16),
-        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
-      ),
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Handle
-          Container(
-            width: 40, height: 4,
-            decoration: BoxDecoration(
-              color: Colors.white24,
-              borderRadius: BorderRadius.circular(4),
-            ),
-          ),
-          const SizedBox(height: 16),
-
-          // Header
-          Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('SELECT QUALITY',
-                        style: TextStyle(
-                            color: Color(0xFFFFCC00),
-                            fontSize: 10,
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: 1.5)),
-                    Text(
-                      widget.item.title +
-                          (widget.episode != null
-                              ? ' • S${widget.season}E${widget.episode}'
-                              : ''),
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.w800),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    if (_imdbId != null)
-                      Text('IMDB: $_imdbId',
-                          style: const TextStyle(
-                              color: Colors.white24, fontSize: 10)),
-                  ],
-                ),
+    return DraggableScrollableSheet(
+      initialChildSize: 0.6,
+      minChildSize: 0.4,
+      maxChildSize: 0.92,
+      builder: (_, controller) => Container(
+        decoration: const BoxDecoration(
+          color: Color(0xFF0E0E16),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Column(
+          children: [
+            // Handle
+            Container(
+              margin: const EdgeInsets.only(top: 10, bottom: 4),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(2),
               ),
-              IconButton(
-                icon: const Icon(Icons.close, color: Colors.white54),
-                onPressed: () => Navigator.pop(context),
+            ),
+            // Header
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('SELECT SOURCE',
+                            style: TextStyle(
+                                color: Color(0xFFFFCC00),
+                                fontSize: 10,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 1.5)),
+                        SizedBox(height: 2),
+                        Text('All sources via Torrentio',
+                            style:
+                                TextStyle(color: Colors.white38, fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon:
+                        const Icon(Icons.close, color: Colors.white54, size: 20),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(color: Colors.white12, height: 1),
+            // Body
+            Expanded(child: _buildBody(controller)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBody(ScrollController controller) {
+    if (_loading) {
+      return const Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(
+                color: Color(0xFFFFCC00), strokeWidth: 2.5),
+            SizedBox(height: 12),
+            Text('Fetching streams...',
+                style: TextStyle(color: Colors.white38, fontSize: 13)),
+          ],
+        ),
+      );
+    }
+
+    if (_error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error_outline, color: Colors.redAccent, size: 36),
+              const SizedBox(height: 12),
+              Text(_error!,
+                  textAlign: TextAlign.center,
+                  style:
+                      const TextStyle(color: Colors.white54, fontSize: 13)),
+              const SizedBox(height: 20),
+              TextButton(
+                onPressed: _fetchStreams,
+                child: const Text('Retry',
+                    style: TextStyle(color: Color(0xFFFFCC00))),
               ),
             ],
           ),
-          const SizedBox(height: 12),
+        ),
+      );
+    }
 
-          // InFlex resolver badge
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            decoration: BoxDecoration(
-              color: const Color(0xFFFFCC00).withValues(alpha: 0.06),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                  color: const Color(0xFFFFCC00).withValues(alpha: 0.15)),
-            ),
-            child: const Row(
-              children: [
-                Icon(Icons.rocket_launch_rounded,
-                    color: Color(0xFFFFCC00), size: 16),
-                SizedBox(width: 8),
-                Text(
-                  'Powered by InFlex Resolver — cached streams play instantly ⚡',
-                  style: TextStyle(
-                      color: Color(0xFFFFCC00),
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600),
-                ),
-              ],
-            ),
+    // Separate debrid and embed streams
+    final debridStreams =
+        _streams.where((s) => !s.isEmbed && s.infoHash.isNotEmpty).toList();
+    final embedStreams = _streams.where((s) => s.isEmbed).toList();
+
+    return ListView(
+      controller: controller,
+      padding: const EdgeInsets.only(bottom: 24),
+      children: [
+        if (debridStreams.isNotEmpty) ...[
+          _SectionHeader(
+            icon: Icons.bolt_rounded,
+            label: 'DEBRID SOURCES',
+            color: const Color(0xFFFFCC00),
+            subtitle: 'Cached on Telegram · Instant play',
           ),
-          const SizedBox(height: 12),
+          ...debridStreams.map((s) => _StreamTile(
+                stream: s,
+                onTap: () => _selectStream(s),
+              )),
+        ],
+        if (embedStreams.isNotEmpty) ...[
+          _SectionHeader(
+            icon: Icons.language_rounded,
+            label: 'EMBED SOURCES',
+            color: Colors.white54,
+            subtitle: 'Fallback · WebView player',
+          ),
+          ...embedStreams.map((s) => _StreamTile(
+                stream: s,
+                onTap: () => _selectStream(s),
+              )),
+        ],
+      ],
+    );
+  }
+}
 
-          // Content
-          if (_loading)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 28),
-              child: Column(
-                children: [
-                  CircularProgressIndicator(
-                      color: Color(0xFFFFCC00), strokeWidth: 2),
-                  SizedBox(height: 12),
-                  Text('Finding best streams…',
-                      style: TextStyle(color: Colors.white38, fontSize: 13)),
-                ],
-              ),
-            )
-          else if (_streams.isEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 20),
-              child: Column(
-                children: [
-                  const Icon(Icons.search_off_rounded,
-                      color: Colors.white24, size: 40),
-                  const SizedBox(height: 12),
-                  Text(
-                    _error ?? 'No streams found.',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                        color: Colors.white38, fontSize: 13),
-                  ),
-                  const SizedBox(height: 16),
-                  ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFFFCC00),
-                      foregroundColor: Colors.black,
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10)),
-                    ),
-                    icon: const Icon(Icons.refresh_rounded),
-                    label: const Text('Retry',
-                        style: TextStyle(fontWeight: FontWeight.w800)),
-                    onPressed: _fetchStreams,
-                  ),
-                ],
-              ),
-            )
-          else
-            ConstrainedBox(
-              constraints: BoxConstraints(
-                maxHeight: MediaQuery.of(context).size.height * 0.5,
-              ),
-              child: ListView.separated(
-                shrinkWrap: true,
-                itemCount: _streams.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 8),
-                itemBuilder: (_, i) => _StreamTile(
-                  stream: _streams[i],
-                  onTap: () => _selectStream(_streams[i]),
-                ),
-              ),
-            ),
+// ── SUB WIDGETS ───────────────────────────────────────────────────────────────
+
+class _SectionHeader extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  final String subtitle;
+  const _SectionHeader(
+      {required this.icon,
+      required this.label,
+      required this.color,
+      required this.subtitle});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 16),
+          const SizedBox(width: 6),
+          Text(label,
+              style: TextStyle(
+                  color: color,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.2)),
+          const SizedBox(width: 8),
+          Text(subtitle,
+              style:
+                  const TextStyle(color: Colors.white24, fontSize: 10)),
         ],
       ),
     );
@@ -257,88 +319,89 @@ class _StreamTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final is1080 = stream.quality.contains('1080');
-    final qualColor = is1080
-        ? const Color(0xFF3b82f6)
-        : const Color(0xFF22c55e);
-
-    return GestureDetector(
+    final qualColor = StreamService.qualityColor(stream.quality);
+    return InkWell(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
           color: Colors.white.withValues(alpha: 0.04),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+          borderRadius: BorderRadius.circular(12),
+          border:
+              Border.all(color: Colors.white.withValues(alpha: 0.06)),
         ),
         child: Row(
           children: [
-            // Icon
+            // Quality badge
             Container(
-              width: 44, height: 44,
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
-                color: qualColor.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(12),
+                color: Color(qualColor).withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(6),
               ),
-              child: Icon(Icons.play_circle_filled_rounded,
-                  color: qualColor, size: 26),
+              child: Text(
+                stream.quality,
+                style: TextStyle(
+                    color: Color(qualColor),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800),
+              ),
             ),
             const SizedBox(width: 12),
-
             // Info
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    stream.title.isNotEmpty ? stream.title : stream.quality,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                    stream.title,
                     style: const TextStyle(
                         color: Colors.white,
                         fontSize: 13,
                         fontWeight: FontWeight.w700),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
+                  const SizedBox(height: 3),
                   Row(
                     children: [
-                      const Text('🧲 Torrent  ',
-                          style: TextStyle(
-                              color: Colors.white38, fontSize: 11)),
-                      if (stream.size != null)
-                        Text('💾 ${stream.size}  ',
+                      if (stream.size != null) ...[
+                        const Icon(Icons.storage_rounded,
+                            color: Colors.white30, size: 11),
+                        const SizedBox(width: 3),
+                        Text(stream.size!,
                             style: const TextStyle(
                                 color: Colors.white38, fontSize: 11)),
-                      if ((stream.seeds ?? 0) > 0)
-                        Text('👤 ${stream.seeds}',
-                            style: TextStyle(
-                                color: (stream.seeds ?? 0) > 10
-                                    ? const Color(0xFF22c55e)
-                                    : Colors.white38,
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600)),
+                        const SizedBox(width: 10),
+                      ],
+                      if (stream.seeds != null) ...[
+                        const Icon(Icons.people_rounded,
+                            color: Colors.white30, size: 11),
+                        const SizedBox(width: 3),
+                        Text('${stream.seeds} seeds',
+                            style: const TextStyle(
+                                color: Colors.white38, fontSize: 11)),
+                      ],
                     ],
                   ),
                 ],
               ),
             ),
-
-            // Quality badge
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              decoration: BoxDecoration(
-                color: qualColor.withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                stream.quality,
-                style: TextStyle(
-                    color: qualColor,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w800),
-              ),
+            // Source tag
+            Text(
+              stream.isEmbed ? 'Embed' : 'Debrid',
+              style: TextStyle(
+                  color: stream.isEmbed
+                      ? Colors.white24
+                      : const Color(0xFFFFCC00).withValues(alpha: 0.8),
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600),
             ),
-            const SizedBox(width: 6),
-            const Icon(Icons.chevron_right, color: Colors.white24, size: 20),
+            const SizedBox(width: 8),
+            const Icon(Icons.play_circle_outline_rounded,
+                color: Colors.white24, size: 22),
           ],
         ),
       ),
