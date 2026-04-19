@@ -22,7 +22,7 @@ class DebridService {
 
   /// Telegram FileStream proxy that turns a file_id into a seekable HTTP URL.
   /// Typical deploy: https://github.com/EverythingSuckz/TG-FileStreamBot
-  static const String _fileStreamBase = 'https://YOUR-FILESTREAM-DEPLOY.com';
+  static const String _fileStreamBase = 'https://tgfilestream-pv4w.onrender.com';
 
   static final _client = http.Client();
   static const _timeout = Duration(seconds: 20);
