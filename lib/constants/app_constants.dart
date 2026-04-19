@@ -23,7 +23,7 @@ class AppConstants {
   // ── TELEGRAM FILESTREAM PROXY ──────────────────────────────────────────────
   // Self-hosted TG-FileStreamBot. Converts file_id → seekable HTTP stream.
   // https://github.com/EverythingSuckz/TG-FileStreamBot
-  static const String fileStreamBase = 'https://YOUR-FILESTREAM-DEPLOY.com';
+  static const String fileStreamBase = 'https://tgfilestream-pv4w.onrender.com/';
 
   // ── DEBRID BOT (fps.ms) ────────────────────────────────────────────────────
   // The Python bot runs at banana.fps.ms:10352.
