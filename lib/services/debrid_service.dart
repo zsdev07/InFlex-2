@@ -14,6 +14,7 @@ import 'dart:async';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import '../screens/debrid_resolver_screen.dart';
 
 // ── Models ───────────────────────────────────────────────────────────────────
 
