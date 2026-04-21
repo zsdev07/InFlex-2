@@ -1,468 +1,237 @@
-import 'dart:async';
-import 'package:flutter/material.dart';
-import '../services/debrid_service.dart';
-import '../services/stream_service.dart';
-import 'player_screen.dart';
+// lib/services/debrid_service.dart
+//
+// InFlex — Debrid Service (Serverless Edition)
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// All methods are STATIC so debrid_resolver_screen.dart can call them as:
+//   DebridService.checkCache(...)
+//   DebridService.leech(...)
+//   DebridService.pollStatus(...)
+//
+// The stream URL returned in DebridResult.streamUrl points at TGFileStreamBot
+// using the new /stream/doc/:docID route (no hash needed).
+// ══════════════════════════════════════════════════════════════════════════════
 
-/// ── DebridResolverScreen ───────────────────────────────────────────────────
-///
-/// Orchestrates the full "Check Cache → Leech if missing → Stream" flow.
-///
-/// Entry points:
-///   • Navigator.push(DebridResolverScreen(...))  — from StreamBottomSheet
-///
-/// The screen:
-///   1. checkCache(imdbId)
-///   2a. Hit  → show "Instant Play" badge, push PlayerScreen after 600ms
-///   2b. Miss → leech(magnetLink) → poll every 5s → push PlayerScreen on ready
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 
-class DebridResolverScreen extends StatefulWidget {
-  final String imdbId;
-  final String magnetLink;
-  final String movieTitle;
-  final String quality;
+// ── Config ────────────────────────────────────────────────────────────────────
 
-  /// Passed through to PlayerScreen for the title bar.
-  final String? subtitle;
+/// Your Render backend URL — no trailing slash.
+const String _kBackendUrl = 'https://inflexbackend.onrender.com';
 
-  const DebridResolverScreen({
-    super.key,
-    required this.imdbId,
-    required this.magnetLink,
-    required this.movieTitle,
-    required this.quality,
-    this.subtitle,
-  });
+/// Your TGFileStreamBot Render URL — no trailing slash.
+/// This is the value you provided: https://streambothost.onrender.com
+const String _kStreamBotUrl = 'https://streambothost.onrender.com';
 
-  @override
-  State<DebridResolverScreen> createState() => _DebridResolverScreenState();
-}
+// ── DebridStatus ──────────────────────────────────────────────────────────────
 
-class _DebridResolverScreenState extends State<DebridResolverScreen>
-    with SingleTickerProviderStateMixin {
-  DebridStatus _status = DebridStatus.queued;
-  int _progress = 0;
-  double _downloadedMb = 0;
-  double _totalMb = 0;
-  String _message = 'Checking InFlex cache...';
-  bool _cached = false;
+enum DebridStatus {
+  queued,
+  downloading,
+  uploading,
+  cached,
+  error,
+  missing;
 
-  Timer? _pollTimer;
-  late AnimationController _pulse;
-
-  @override
-  void initState() {
-    super.initState();
-    _pulse = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 2),
-    )..repeat(reverse: true);
-
-    _start();
-  }
-
-  @override
-  void dispose() {
-    _pollTimer?.cancel();
-    _pulse.dispose();
-    super.dispose();
-  }
-
-  // ── ENTRY POINT ────────────────────────────────────────────────────────────
-
-  Future<void> _start() async {
-    // Step 1: cache check
-    final cached = await DebridService.checkCache(widget.imdbId,
-        quality: widget.quality);
-
-    if (!mounted) return;
-
-    if (cached.isCached && cached.streamUrl != null) {
-      _handleReady(cached, fromCache: true);
-      return;
+  static DebridStatus fromString(String? s) {
+    switch (s) {
+      case 'queued':      return DebridStatus.queued;
+      case 'downloading': return DebridStatus.downloading;
+      case 'uploading':   return DebridStatus.uploading;
+      case 'cached':      return DebridStatus.cached;
+      case 'error':       return DebridStatus.error;
+      default:            return DebridStatus.missing;
     }
-
-    // Step 2: not cached — kick off leech
-    _setStatus(DebridStatus.queued, message: 'Starting leech...');
-    final accepted = await DebridService.leech(
-      magnetLink: widget.magnetLink,
-      imdbId: widget.imdbId,
-      quality: widget.quality,
-      title: widget.movieTitle,
-    );
-
-    if (!mounted) return;
-
-    if (!accepted) {
-      _setStatus(DebridStatus.error,
-          message: 'Debrid bot unavailable. Try another source.');
-      return;
-    }
-
-    // Step 3: poll until ready
-    _pollTimer =
-        Timer.periodic(const Duration(seconds: 5), (_) => _poll());
-    _poll(); // first poll immediately
-  }
-
-  Future<void> _poll() async {
-    final result = await DebridService.pollStatus(widget.imdbId,
-        quality: widget.quality);
-
-    if (!mounted) return;
-
-    if (result.isCached && result.streamUrl != null) {
-      _pollTimer?.cancel();
-      _handleReady(result, fromCache: false);
-      return;
-    }
-
-    _setStatusFromResult(result);
-  }
-
-  // ── STATE HELPERS ──────────────────────────────────────────────────────────
-
-  void _setStatus(DebridStatus s, {String? message}) {
-    if (!mounted) return;
-    setState(() {
-      _status = s;
-      _message = message ?? s.name;
-    });
-  }
-
-  void _setStatusFromResult(DebridResult r) {
-    if (!mounted) return;
-    setState(() {
-      _status = r.status;
-      _progress = r.progressPercent;
-      _downloadedMb = r.downloadedMb;
-      _totalMb = r.totalMb;
-      _message = r.displayMessage;
-    });
-  }
-
-  Future<void> _handleReady(DebridResult result, {required bool fromCache}) async {
-    setState(() {
-      _status = DebridStatus.cached;
-      _cached = fromCache;
-      _message = fromCache
-          ? 'Already on Telegram — instant play!'
-          : 'Upload complete — starting playback...';
-    });
-
-    await Future.delayed(const Duration(milliseconds: 700));
-    if (!mounted) return;
-
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(
-        builder: (_) => PlayerScreen(
-          streamUrl: result.streamUrl!,
-          title: widget.movieTitle,
-          subtitle: widget.subtitle,
-          isEmbed: false,
-        ),
-      ),
-    );
-  }
-
-  // ── BUILD ──────────────────────────────────────────────────────────────────
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF050508),
-      body: SafeArea(
-        child: Column(
-          children: [
-            // Back button
-            Align(
-              alignment: Alignment.centerLeft,
-              child: IconButton(
-                icon: const Icon(Icons.arrow_back, color: Colors.white),
-                onPressed: () {
-                  _pollTimer?.cancel();
-                  Navigator.pop(context);
-                },
-              ),
-            ),
-
-            const Spacer(),
-
-            // Pulsing logo
-            AnimatedBuilder(
-              animation: _pulse,
-              builder: (_, __) => Transform.scale(
-                scale: 0.92 + (_pulse.value * 0.08),
-                child: Container(
-                  width: 100,
-                  height: 100,
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xFFFFCC00), Color(0xFFFFD740)],
-                    ),
-                    borderRadius: BorderRadius.circular(24),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFFFFCC00)
-                            .withValues(alpha: 0.2 + (_pulse.value * 0.4)),
-                        blurRadius: 40,
-                        spreadRadius: 8,
-                      ),
-                    ],
-                  ),
-                  child: const Center(
-                    child: Text(
-                      'IF',
-                      style: TextStyle(
-                          color: Colors.black,
-                          fontSize: 38,
-                          fontWeight: FontWeight.w900),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 28),
-
-            // Title
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32),
-              child: Text(
-                widget.movieTitle,
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 22,
-                    fontWeight: FontWeight.w900),
-                textAlign: TextAlign.center,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-
-            const SizedBox(height: 10),
-            _QualityBadge(quality: widget.quality),
-            const SizedBox(height: 36),
-
-            // Progress area
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32),
-              child: _buildProgress(),
-            ),
-
-            const SizedBox(height: 16),
-
-            // Status message
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32),
-              child: Text(
-                _message,
-                style: const TextStyle(color: Colors.white54, fontSize: 13),
-                textAlign: TextAlign.center,
-              ),
-            ),
-
-            const SizedBox(height: 16),
-
-            if (_cached) _CacheBadge(),
-
-            const SizedBox(height: 24),
-
-            if (_status == DebridStatus.downloading ||
-                _status == DebridStatus.uploading ||
-                _status == DebridStatus.queued)
-              _InfoCard(downloadedMb: _downloadedMb, totalMb: _totalMb),
-
-            if (_status == DebridStatus.error) _ErrorCard(onBack: () {
-              _pollTimer?.cancel();
-              Navigator.pop(context);
-            }),
-
-            const Spacer(),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildProgress() {
-    if ((_status == DebridStatus.downloading ||
-            _status == DebridStatus.uploading) &&
-        _progress > 0) {
-      final color = _status == DebridStatus.uploading
-          ? const Color(0xFF22c55e)
-          : const Color(0xFFFFCC00);
-      return Column(
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: LinearProgressIndicator(
-              value: _progress / 100,
-              backgroundColor: Colors.white.withValues(alpha: 0.08),
-              valueColor: AlwaysStoppedAnimation(color),
-              minHeight: 10,
-            ),
-          ),
-          const SizedBox(height: 14),
-          Text(
-            '$_progress%',
-            style: TextStyle(
-                color: color, fontSize: 32, fontWeight: FontWeight.w900),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            _status == DebridStatus.uploading
-                ? 'Uploading to Telegram'
-                : 'Downloading torrent',
-            style: const TextStyle(color: Colors.white38, fontSize: 12),
-          ),
-        ],
-      );
-    }
-
-    // Spinner
-    return SizedBox(
-      width: 52,
-      height: 52,
-      child: CircularProgressIndicator(
-        strokeWidth: 3,
-        valueColor: AlwaysStoppedAnimation(
-          _status == DebridStatus.cached
-              ? const Color(0xFF22c55e)
-              : const Color(0xFFFFCC00),
-        ),
-      ),
-    );
   }
 }
 
-// ── SUB WIDGETS ───────────────────────────────────────────────────────────────
+// ── DebridResult ──────────────────────────────────────────────────────────────
 
-class _QualityBadge extends StatelessWidget {
-  final String quality;
-  const _QualityBadge({required this.quality});
+class DebridResult {
+  final DebridStatus status;
+  final bool isCached;
 
-  @override
-  Widget build(BuildContext context) {
-    final color = quality.contains('1080')
-        ? const Color(0xFF3b82f6)
-        : const Color(0xFF22c55e);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
-      ),
-      child: Text(quality,
-          style: TextStyle(
-              color: color, fontWeight: FontWeight.w800, fontSize: 13)),
-    );
-  }
-}
+  /// Direct stream URL: https://streambothost.onrender.com/stream/doc/<file_id>
+  /// Only non-null when isCached == true.
+  final String? streamUrl;
 
-class _CacheBadge extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      decoration: BoxDecoration(
-        color: const Color(0xFF22c55e).withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(20),
-        border:
-            Border.all(color: const Color(0xFF22c55e).withValues(alpha: 0.3)),
-      ),
-      child: const Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.bolt_rounded, color: Color(0xFF22c55e), size: 18),
-          SizedBox(width: 6),
-          Text('Instant play — already cached!',
-              style: TextStyle(
-                  color: Color(0xFF22c55e),
-                  fontSize: 13,
-                  fontWeight: FontWeight.w700)),
-        ],
-      ),
-    );
-  }
-}
-
-class _InfoCard extends StatelessWidget {
+  final int progressPercent;
   final double downloadedMb;
   final double totalMb;
-  const _InfoCard({required this.downloadedMb, required this.totalMb});
+  final String displayMessage;
 
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 32),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.04),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
-        ),
-        child: Column(
-          children: [
-            if (downloadedMb > 0 && totalMb > 0)
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text('Downloaded',
-                      style: TextStyle(color: Colors.white38, fontSize: 12)),
-                  Text(
-                    '${downloadedMb.toStringAsFixed(0)} / ${totalMb.toStringAsFixed(0)} MB',
-                    style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700),
-                  ),
-                ],
-              ),
-            if (downloadedMb > 0) const SizedBox(height: 10),
-            const Row(
-              children: [
-                Icon(Icons.info_outline, color: Colors.white24, size: 14),
-                SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'Leeched once. All future plays are instant from Telegram.',
-                    style: TextStyle(color: Colors.white30, fontSize: 11),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
+  const DebridResult({
+    required this.status,
+    required this.isCached,
+    this.streamUrl,
+    this.progressPercent = 0,
+    this.downloadedMb = 0,
+    this.totalMb = 0,
+    this.displayMessage = '',
+  });
+
+  /// Build from GET /cache/check response
+  factory DebridResult.fromCacheCheck(Map<String, dynamic> json) {
+    final bool cached   = json['cached'] == true;
+    final String? fileId = json['file_id'] as String?;
+    return DebridResult(
+      status:         cached ? DebridStatus.cached : DebridStatus.missing,
+      isCached:       cached,
+      streamUrl:      (cached && fileId != null)
+                          ? '$_kStreamBotUrl/stream/doc/$fileId'
+                          : null,
+      displayMessage: cached
+                          ? 'Already on Telegram — instant play!'
+                          : 'Not cached yet.',
     );
+  }
+
+  /// Build from GET /debrid/status response
+  factory DebridResult.fromStatusPoll(Map<String, dynamic> json) {
+    final DebridStatus status  = DebridStatus.fromString(json['status'] as String?);
+    final bool isCached        = status == DebridStatus.cached;
+    final String? fileId       = json['file_id'] as String?;
+    final int progress         = (json['progress'] as num?)?.toInt() ?? 0;
+    final double dlMb          = (json['downloaded_mb'] as num?)?.toDouble() ?? 0;
+    final double totalMb       = (json['total_mb'] as num?)?.toDouble() ?? 0;
+    final String msg           = json['message'] as String? ?? _defaultMessage(status);
+
+    return DebridResult(
+      status:          status,
+      isCached:        isCached,
+      streamUrl:       (isCached && fileId != null)
+                           ? '$_kStreamBotUrl/stream/doc/$fileId'
+                           : null,
+      progressPercent: progress,
+      downloadedMb:    dlMb,
+      totalMb:         totalMb,
+      displayMessage:  msg,
+    );
+  }
+
+  /// Convenience error result
+  factory DebridResult.error([String msg = 'Something went wrong.']) =>
+      DebridResult(
+        status:         DebridStatus.error,
+        isCached:       false,
+        displayMessage: msg,
+      );
+
+  static String _defaultMessage(DebridStatus s) {
+    switch (s) {
+      case DebridStatus.queued:      return 'Queued — GitHub worker starting...';
+      case DebridStatus.downloading: return 'Downloading torrent chunks...';
+      case DebridStatus.uploading:   return 'Uploading to Telegram...';
+      case DebridStatus.cached:      return 'Ready! Starting playback...';
+      case DebridStatus.error:       return 'Something went wrong.';
+      case DebridStatus.missing:     return 'Not found.';
+    }
   }
 }
 
-class _ErrorCard extends StatelessWidget {
-  final VoidCallback onBack;
-  const _ErrorCard({required this.onBack});
+// ── DebridService ─────────────────────────────────────────────────────────────
 
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 32),
-      child: Column(
-        children: [
-          const Icon(Icons.error_outline, color: Colors.redAccent, size: 36),
-          const SizedBox(height: 12),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFFFCC00),
-                foregroundColor: Colors.black),
-            onPressed: onBack,
-            child: const Text('Go Back',
-                style: TextStyle(fontWeight: FontWeight.w800)),
-          ),
-        ],
-      ),
-    );
+class DebridService {
+  // Private constructor — this class is never instantiated.
+  // All methods are static, matching how debrid_resolver_screen.dart calls them.
+  DebridService._();
+
+  // ── 1. checkCache ──────────────────────────────────────────────────────────
+  //
+  // Checks Supabase (via Render) for a cached file_id.
+  // Returns instantly — no GitHub Action triggered.
+  //
+  // Called by DebridResolverScreen._start() as the very first step.
+  //
+  static Future<DebridResult> checkCache(
+    String imdbId, {
+    String quality = 'HD',
+  }) async {
+    try {
+      final Uri uri = Uri.parse('$_kBackendUrl/cache/check').replace(
+        queryParameters: {'imdb_id': imdbId, 'quality': quality},
+      );
+
+      final http.Response res = await http
+          .get(uri, headers: {'Accept': 'application/json'})
+          .timeout(const Duration(seconds: 10));
+
+      if (res.statusCode == 200) {
+        return DebridResult.fromCacheCheck(
+          jsonDecode(res.body) as Map<String, dynamic>,
+        );
+      }
+      return DebridResult.error('Cache check failed (${res.statusCode})');
+    } catch (e) {
+      return DebridResult.error('Cache check error: $e');
+    }
+  }
+
+  // ── 2. leech ───────────────────────────────────────────────────────────────
+  //
+  // Tells the Render backend to:
+  //   • Upsert a 'queued' row in Supabase
+  //   • Fire a GitHub Actions repository_dispatch
+  //
+  // Returns true if accepted (HTTP 200 or 202), false on network error.
+  //
+  // Called by DebridResolverScreen._start() after a cache miss.
+  //
+  static Future<bool> leech({
+    required String magnetLink,
+    required String imdbId,
+    String quality = 'HD',
+    String? title,
+  }) async {
+    try {
+      final http.Response res = await http
+          .post(
+            Uri.parse('$_kBackendUrl/debrid/leech'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'magnet_link': magnetLink,
+              'imdb_id':     imdbId,
+              'quality':     quality,
+              if (title != null) 'title': title,
+            }),
+          )
+          .timeout(const Duration(seconds: 15));
+
+      // 202 = freshly queued, 200 = already in progress — both mean accepted
+      return res.statusCode == 202 || res.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // ── 3. pollStatus ──────────────────────────────────────────────────────────
+  //
+  // Reads the current job row from Supabase (via Render).
+  // Called every 5 s by DebridResolverScreen._poll() until
+  // result.isCached == true or status == error.
+  //
+  static Future<DebridResult> pollStatus(
+    String imdbId, {
+    String quality = 'HD',
+  }) async {
+    try {
+      final Uri uri = Uri.parse('$_kBackendUrl/debrid/status').replace(
+        queryParameters: {'imdb_id': imdbId, 'quality': quality},
+      );
+
+      final http.Response res = await http
+          .get(uri, headers: {'Accept': 'application/json'})
+          .timeout(const Duration(seconds: 10));
+
+      if (res.statusCode == 200) {
+        return DebridResult.fromStatusPoll(
+          jsonDecode(res.body) as Map<String, dynamic>,
+        );
+      }
+      return DebridResult.error('Status poll failed (${res.statusCode})');
+    } catch (e) {
+      return DebridResult.error('Status poll error: $e');
+    }
   }
 }
