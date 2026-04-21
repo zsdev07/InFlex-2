@@ -23,9 +23,12 @@ void main() async {
 
   // Supabase
   await Supabase.initialize(
-    url: _supabaseUrl,
-    anonKey: _supabaseAnonKey,
-  );
+  url: _supabaseUrl,
+  anonKey: _supabaseAnonKey,
+  realtimeClientOptions: const RealtimeClientOptions(
+    eventsPerSecond: 10,
+  ),
+);
 
   // Hive (watchlist only)
   try {
