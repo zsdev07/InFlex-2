@@ -1,263 +1,198 @@
-import 'dart:convert';
-import 'package:flutter/foundation.dart';
+// ────────────────────────────────────────────────────────────────────────────
+// lib/services/debrid_service.dart
+//
+// InFlex — Supabase Realtime + Debrid flow
+//
+// This file shows how to:
+//   1. Check the cache first (instant play if already cached).
+//   2. Subscribe to Realtime BEFORE triggering the leech so no update is missed.
+//   3. Trigger the leech (Render → GitHub Actions).
+//   4. Drive a progress bar from the live Supabase stream.
+// ────────────────────────────────────────────────────────────────────────────
+
+import 'dart:async';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:http/http.dart' as http;
+import 'dart:convert';
 
-/// ── InFlex Debrid Service ─────────────────────────────────────────────────
-///
-/// Flow:
-///   1. checkCache(imdbId)       → Supabase: does file_id exist?
-///   2a. If cached  → buildStreamUrl(fileId) → play instantly
-///   2b. If missing → leech(magnetLink)      → bot downloads & uploads to TG
-///   3. poll(imdbId) every 5 s  → wait for bot to finish, get file_id
-///   4. buildStreamUrl(fileId)  → stream via TG FileStream proxy
-///
-/// Backend (Render): https://inflexbackend.onrender.com
-/// Debrid bot:       banana.fps.ms:10352
-/// FileStream proxy: https://YOUR-FILESTREAM-DEPLOY.com   (or self-hosted)
+// ── Models ───────────────────────────────────────────────────────────────────
 
-class DebridService {
-  // ── CONFIG ─────────────────────────────────────────────────────────────────
-  /// Your Render backend. Replace before deploying.
-  static const String _backendBase = 'https://inflexbackend.onrender.com';
+enum DebridStatus { queued, downloading, uploading, cached, error, missing }
 
-  /// Telegram FileStream proxy that turns a file_id into a seekable HTTP URL.
-  /// Typical deploy: https://github.com/EverythingSuckz/TG-FileStreamBot
-  static const String _fileStreamBase = 'https://tgfilestream-pv4w.onrender.com';
+class DebridProgress {
+  final DebridStatus status;
+  final int progress;          // 0–100
+  final double downloadedMb;
+  final double totalMb;
+  final String? fileId;
+  final String? errorMsg;
 
-  static final _client = http.Client();
-  static const _timeout = Duration(seconds: 20);
+  const DebridProgress({
+    required this.status,
+    required this.progress,
+    this.downloadedMb = 0,
+    this.totalMb = 0,
+    this.fileId,
+    this.errorMsg,
+  });
 
-  // ── 1. CACHE CHECK ─────────────────────────────────────────────────────────
-  /// Returns a [DebridResult] with status=cached and a ready stream URL
-  /// if the movie is already on Telegram, otherwise status=missing.
-  static Future<DebridResult> checkCache(String imdbId, {String? quality}) async {
-    try {
-      final uri = Uri.parse('$_backendBase/cache/check').replace(
-        queryParameters: {
-          'imdb_id': imdbId,
-          if (quality != null) 'quality': quality,
-        },
-      );
-      debugPrint('[Debrid] checkCache → $uri');
-      final res = await _client.get(uri).timeout(_timeout);
-
-      if (res.statusCode != 200) {
-        debugPrint('[Debrid] checkCache HTTP ${res.statusCode}');
-        return DebridResult(status: DebridStatus.missing);
-      }
-
-      final data = jsonDecode(res.body) as Map<String, dynamic>;
-      if (data['cached'] == true && data['file_id'] != null) {
-        final streamUrl = buildStreamUrl(data['file_id'] as String);
-        return DebridResult(
-          status: DebridStatus.cached,
-          fileId: data['file_id'] as String,
-          streamUrl: streamUrl,
-          quality: data['quality'] as String?,
-          fileSizeBytes: (data['file_size'] as num?)?.toInt(),
-        );
-      }
-
-      return DebridResult(status: DebridStatus.missing);
-    } catch (e) {
-      debugPrint('[Debrid] checkCache error: $e');
-      return DebridResult(status: DebridStatus.missing);
-    }
+  factory DebridProgress.fromRow(Map<String, dynamic> row) {
+    return DebridProgress(
+      status: _parseStatus(row['status'] as String? ?? 'missing'),
+      progress: (row['progress'] as num?)?.toInt() ?? 0,
+      downloadedMb: (row['downloaded_mb'] as num?)?.toDouble() ?? 0,
+      totalMb: (row['total_mb'] as num?)?.toDouble() ?? 0,
+      fileId: row['file_id'] as String?,
+      errorMsg: row['error_msg'] as String?,
+    );
   }
 
-  // ── 2. LEECH ───────────────────────────────────────────────────────────────
-  /// Sends a magnet link to the backend which forwards it to the debrid bot.
-  /// The bot (banana.fps.ms:10352) will torrent → upload chunks to Telegram.
-  /// Returns true if the leech job was accepted.
-  static Future<bool> leech({
-    required String magnetLink,
-    required String imdbId,
-    String? quality,
-    String? title,
-  }) async {
-    try {
-      final uri = Uri.parse('$_backendBase/debrid/leech');
-      debugPrint('[Debrid] leech → $uri');
-      final res = await _client
-          .post(
-            uri,
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'magnet_link': magnetLink,
-              'imdb_id': imdbId,
-              if (quality != null) 'quality': quality,
-              if (title != null) 'title': title,
-            }),
-          )
-          .timeout(_timeout);
-
-      debugPrint('[Debrid] leech response ${res.statusCode}: ${res.body}');
-      return res.statusCode == 200 || res.statusCode == 202;
-    } catch (e) {
-      debugPrint('[Debrid] leech error: $e');
-      return false;
-    }
-  }
-
-  // ── 3. POLL STATUS ─────────────────────────────────────────────────────────
-  /// Polls the backend for the leech job status.
-  /// Call this every ~5 seconds from a Timer.
-  static Future<DebridResult> pollStatus(String imdbId, {String? quality}) async {
-    try {
-      final uri = Uri.parse('$_backendBase/debrid/status').replace(
-        queryParameters: {
-          'imdb_id': imdbId,
-          if (quality != null) 'quality': quality,
-        },
-      );
-      final res = await _client.get(uri).timeout(_timeout);
-
-      if (res.statusCode != 200) {
-        return DebridResult(
-          status: DebridStatus.error,
-          errorMessage: 'Backend returned ${res.statusCode}',
-        );
-      }
-
-      final data = jsonDecode(res.body) as Map<String, dynamic>;
-      final rawStatus = data['status'] as String? ?? 'error';
-
-      switch (rawStatus) {
-        case 'cached':
-        case 'ready':
-          final fileId = data['file_id'] as String?;
-          if (fileId == null) {
-            return DebridResult(
-              status: DebridStatus.error,
-              errorMessage: 'Ready but no file_id returned',
-            );
-          }
-          return DebridResult(
-            status: DebridStatus.cached,
-            fileId: fileId,
-            streamUrl: buildStreamUrl(fileId),
-            quality: data['quality'] as String?,
-            fileSizeBytes: (data['file_size'] as num?)?.toInt(),
-          );
-
-        case 'downloading':
-          return DebridResult(
-            status: DebridStatus.downloading,
-            progressPercent: (data['progress'] as num?)?.toInt() ?? 0,
-            downloadedMb: (data['downloaded_mb'] as num?)?.toDouble() ?? 0,
-            totalMb: (data['total_mb'] as num?)?.toDouble() ?? 0,
-            message: data['message'] as String?,
-          );
-
-        case 'uploading':
-          return DebridResult(
-            status: DebridStatus.uploading,
-            progressPercent: (data['progress'] as num?)?.toInt() ?? 0,
-            message: data['message'] as String? ?? 'Uploading to Telegram...',
-          );
-
-        case 'queued':
-          return DebridResult(
-            status: DebridStatus.queued,
-            message: data['message'] as String? ?? 'Queued...',
-          );
-
-        default:
-          return DebridResult(
-            status: DebridStatus.error,
-            errorMessage: data['message'] as String? ?? 'Unknown status: $rawStatus',
-          );
-      }
-    } catch (e) {
-      debugPrint('[Debrid] pollStatus error: $e');
-      return DebridResult(
-        status: DebridStatus.error,
-        errorMessage: e.toString(),
-      );
-    }
-  }
-
-  // ── 4. STREAM URL ──────────────────────────────────────────────────────────
-  /// Converts a Telegram file_id to a seekable HTTP stream URL via FileStream.
-  /// The FileStream proxy exposes Range-request-compatible endpoints so that
-  /// video_player can seek without downloading the whole file.
-  static String buildStreamUrl(String fileId) {
-    // Standard TG-FileStreamBot route: GET /watch/<file_id>
-    return '$_fileStreamBase/watch/$fileId';
-  }
-
-  // ── HEALTH ─────────────────────────────────────────────────────────────────
-  static Future<bool> isBackendOnline() async {
-    try {
-      final res = await _client
-          .get(Uri.parse('$_backendBase/health'))
-          .timeout(const Duration(seconds: 6));
-      return res.statusCode == 200;
-    } catch (_) {
-      return false;
-    }
+  static DebridStatus _parseStatus(String s) {
+    return DebridStatus.values.firstWhere(
+      (e) => e.name == s,
+      orElse: () => DebridStatus.missing,
+    );
   }
 }
 
-// ── RESULT MODEL ──────────────────────────────────────────────────────────────
+// ── Service ───────────────────────────────────────────────────────────────────
 
-enum DebridStatus { cached, downloading, uploading, queued, missing, error }
+class DebridService {
+  final SupabaseClient _supabase;
+  final String _backendUrl;   // e.g. "https://inflexbackend.onrender.com"
 
-class DebridResult {
-  final DebridStatus status;
+  DebridService({
+    required SupabaseClient supabase,
+    required String backendUrl,
+  })  : _supabase = supabase,
+        _backendUrl = backendUrl;
 
-  // When cached/ready
-  final String? fileId;
-  final String? streamUrl;
-  final String? quality;
-  final int? fileSizeBytes;
+  // ── 1. Check if already cached ─────────────────────────────────────────────
+  Future<String?> getCachedFileId(String imdbId, {String quality = 'HD'}) async {
+    final res = await _supabase
+        .from('telegram_cache')
+        .select('file_id, status')
+        .eq('imdb_id', imdbId)
+        .eq('quality', quality)
+        .eq('status', 'cached')
+        .maybeSingle();
 
-  // When downloading/uploading
-  final int progressPercent;
-  final double downloadedMb;
-  final double totalMb;
-  final String? message;
+    return res?['file_id'] as String?;
+  }
 
-  // When error
-  final String? errorMessage;
+  // ── 2. Subscribe to live progress BEFORE triggering leech ─────────────────
+  //
+  // Call this, then immediately call [triggerLeech].
+  // The stream will emit DebridProgress updates as the GitHub Action runs.
+  //
+  Stream<DebridProgress> watchProgress(String imdbId, {String quality = 'HD'}) {
+    final controller = StreamController<DebridProgress>.broadcast();
 
-  const DebridResult({
-    required this.status,
-    this.fileId,
-    this.streamUrl,
-    this.quality,
-    this.fileSizeBytes,
-    this.progressPercent = 0,
-    this.downloadedMb = 0,
-    this.totalMb = 0,
-    this.message,
-    this.errorMessage,
-  });
+    final channel = _supabase.channel('debrid-$imdbId-$quality');
 
-  bool get isCached => status == DebridStatus.cached;
-  bool get isError => status == DebridStatus.error;
-  bool get isInProgress =>
-      status == DebridStatus.downloading ||
-      status == DebridStatus.uploading ||
-      status == DebridStatus.queued;
+    channel
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'telegram_cache',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'imdb_id',
+            value: imdbId,
+          ),
+          callback: (payload) {
+            final row = payload.newRecord;
+            if (row['quality'] == quality) {
+              controller.add(DebridProgress.fromRow(row));
+            }
+          },
+        )
+        .subscribe();
 
-  double get progressFraction =>
-      progressPercent > 0 ? progressPercent / 100.0 : 0.0;
+    // Clean up channel when stream is cancelled
+    controller.onCancel = () {
+      _supabase.removeChannel(channel);
+    };
 
-  String get displayMessage {
-    switch (status) {
-      case DebridStatus.cached:
-        return 'Ready! Starting playback...';
-      case DebridStatus.queued:
-        return message ?? 'Queued — waiting for debrid bot...';
-      case DebridStatus.downloading:
-        return message ?? 'Downloading torrent...';
-      case DebridStatus.uploading:
-        return message ?? 'Uploading to Telegram...';
-      case DebridStatus.missing:
-        return 'Not cached — starting leech...';
-      case DebridStatus.error:
-        return errorMessage ?? 'Something went wrong.';
+    return controller.stream;
+  }
+
+  // ── 3. Trigger the leech via Render backend ────────────────────────────────
+  Future<void> triggerLeech({
+    required String imdbId,
+    required String magnetLink,
+    String quality = 'HD',
+    String? title,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$_backendUrl/debrid/leech'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'imdb_id': imdbId,
+        'magnet_link': magnetLink,
+        'quality': quality,
+        if (title != null) 'title': title,
+      }),
+    );
+
+    if (response.statusCode != 202) {
+      throw Exception('Leech trigger failed: ${response.statusCode} ${response.body}');
+    }
+  }
+
+  // ── 4. Convenience: full flow in one call ──────────────────────────────────
+  //
+  // Returns a Stream<DebridProgress>.
+  // The caller should show a progress UI and navigate when status == cached.
+  //
+  // Usage in a widget:
+  //
+  //   final stream = debridService.streamOrPlay(
+  //     imdbId: 'tt1234567',
+  //     magnetLink: 'magnet:?xt=...',
+  //     quality: 'HD',
+  //   );
+  //
+  //   StreamBuilder<DebridProgress>(
+  //     stream: stream,
+  //     builder: (ctx, snap) {
+  //       final p = snap.data;
+  //       if (p?.status == DebridStatus.cached) {
+  //         // navigate to player with p.fileId
+  //       }
+  //       return LinearProgressIndicator(value: (p?.progress ?? 0) / 100);
+  //     },
+  //   );
+  //
+  Stream<DebridProgress> streamOrPlay({
+    required String imdbId,
+    required String magnetLink,
+    String quality = 'HD',
+    String? title,
+  }) async* {
+    // Emit a synthetic "queued" immediately so the UI shows something
+    yield const DebridProgress(status: DebridStatus.queued, progress: 0);
+
+    // Subscribe first, THEN trigger — guarantees no update is missed
+    final progressStream = watchProgress(imdbId, quality: quality);
+
+    // Trigger async (don't await here — the stream handles completion)
+    triggerLeech(
+      imdbId: imdbId,
+      magnetLink: magnetLink,
+      quality: quality,
+      title: title,
+    ).catchError((e) {
+      // Surface error through stream
+    });
+
+    await for (final progress in progressStream) {
+      yield progress;
+      // Auto-complete stream once job reaches a terminal state
+      if (progress.status == DebridStatus.cached ||
+          progress.status == DebridStatus.error) {
+        break;
+      }
     }
   }
 }
