@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/media_model.dart';
 import '../services/tmdb_service.dart';
 import '../services/stream_service.dart';
-import '../repositories/supabase_cache_repo.dart';
+import '../services/supabase_cache_repo.dart';
 import '../screens/debrid_resolver_screen.dart';
 import '../screens/player_screen.dart';
 
