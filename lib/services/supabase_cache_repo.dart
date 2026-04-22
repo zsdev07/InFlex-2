@@ -66,6 +66,25 @@ class SupabaseCacheRepo {
     }
   }
 
+  /// Returns ALL cached rows for an imdb_id (all qualities).
+  static Future<List<CacheRow>> findAllByImdbId(String imdbId) async {
+  try {
+    final rows = await _db
+        .from(_table)
+        .select()
+        .eq('imdb_id', imdbId)
+        .eq('status', 'cached')
+        .order('created_at', ascending: false);
+
+    return rows
+        .map((r) => CacheRow.fromJson(r as Map<String, dynamic>))
+        .toList();
+  } catch (e) {
+    debugPrint('[Supabase] findAllByImdbId error: $e');
+    return [];
+   }
+ }
+
   /// Quick boolean check — true if status='cached' and file_id is set.
   static Future<bool> isCached(String imdbId, {String? quality}) async {
     final row = await findByImdbId(imdbId, quality: quality);
