@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import 'package:chewie/chewie.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class PlayerScreen extends StatefulWidget {
   final String streamUrl;
@@ -301,28 +302,59 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Widget _buildError() {
-    return Padding(
-      padding: const EdgeInsets.all(32),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Icon(Icons.error_outline, color: Colors.redAccent, size: 48),
-          const SizedBox(height: 12),
-          Text(_error!,
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white60, fontSize: 14)),
-          const SizedBox(height: 20),
-          ElevatedButton(
+  final isCodec = _error != null &&
+      (_error!.contains('EXCEEDS_CAPABILITIES') ||
+       _error!.contains('hevc') ||
+       _error!.contains('hvc') ||
+       _error!.contains('VideoError'));
+
+  return Padding(
+    padding: const EdgeInsets.all(32),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Icon(Icons.error_outline, color: Colors.redAccent, size: 48),
+        const SizedBox(height: 12),
+        Text(
+          isCodec
+              ? 'This video uses HEVC/H.265 which your device cannot decode.'
+              : _error!,
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: Colors.white60, fontSize: 14),
+        ),
+        const SizedBox(height: 20),
+
+        // Open in external player button (only shown on codec errors)
+        if (isCodec) ...[
+          ElevatedButton.icon(
+            icon: const Icon(Icons.open_in_new, size: 18),
+            label: const Text('Open in External Player',
+                style: TextStyle(fontWeight: FontWeight.w800)),
             style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFFFFCC00),
-                foregroundColor: Colors.black),
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Go Back',
-                style: TextStyle(fontWeight: FontWeight.w800)),
+                foregroundColor: Colors.black,
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 20, vertical: 12)),
+            onPressed: () async {
+              final uri = Uri.parse(widget.streamUrl);
+              if (await canLaunchUrl(uri)) {
+                await launchUrl(uri,
+                    mode: LaunchMode.externalApplication);
+              }
+            },
           ),
+          const SizedBox(height: 12),
         ],
-      ),
-    );
+
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Go Back',
+              style: TextStyle(
+                  color: Colors.white54, fontWeight: FontWeight.w600)),
+        ),
+      ],
+    ),
+  );
   }
 
   Widget _buildOverlay() {
