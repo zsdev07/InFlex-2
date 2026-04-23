@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'providers/tmdb_provider.dart';
 import 'providers/watchlist_provider.dart';
 import 'screens/splash_screen.dart';
+import 'package:media_kit/media_kit.dart';
 
 // ── Replace these before deploying ────────────────────────────────────────────
 const _supabaseUrl = 'https://dmiqpgmvutcameekywul.supabase.co';
