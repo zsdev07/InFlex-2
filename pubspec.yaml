@@ -21,7 +21,7 @@ dependencies:
   # ── Video Player (replaces video_player + chewie) ─────────────────────────
   # Native media engine. Handles HEVC/H.265, MKV, HDR out of the box.
   media_kit: ^1.1.11
-  media_kit_video: ^1.2.4
+  media_kit_video: 1.2.4
   media_kit_libs_android_video: ^1.0.9   # Android native libs
 
   # URL launcher — kept for "Open in External Player" fallback
