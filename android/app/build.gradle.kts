@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "zx.offical.inflex"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 36
     // NDK version required by libtorrent_flutter native binaries
     ndkVersion = "27.0.12077973"
 
