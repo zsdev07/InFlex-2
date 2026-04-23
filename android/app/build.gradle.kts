@@ -7,6 +7,7 @@ plugins {
 android {
     namespace = "zx.offical.inflex"
     compileSdk = flutter.compileSdkVersion
+    // NDK version required by libtorrent_flutter native binaries
     ndkVersion = "27.0.12077973"
 
     compileOptions {
@@ -20,7 +21,8 @@ android {
 
     defaultConfig {
         applicationId = "zx.offical.inflex"
-        minSdk = flutter.minSdkVersion
+        // libtorrent_flutter requires minSdk 21 (Android 5.0+)
+        minSdk = 21
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
