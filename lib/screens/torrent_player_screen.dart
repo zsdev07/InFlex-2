@@ -25,14 +25,14 @@ import '../services/torrent_engine.dart';
 //   • Codec error fallback: "Open in External Player" button
 
 class TorrentPlayerScreen extends StatefulWidget {
-  final String streamUrl;
+  final String filePath;
   final String title;
   final String quality;
   final TorrentEngine engine;
 
   const TorrentPlayerScreen({
     super.key,
-    required this.streamUrl,
+    required this.filePath,
     required this.title,
     required this.quality,
     required this.engine,
@@ -102,7 +102,8 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen>
 
   Future<void> _openStream() async {
     try {
-      await _player.open(Media(widget.streamUrl));
+      // Use file:/// path directly — no HTTP server, no loopback conflict.
+      await _player.open(Media('file:///${widget.filePath}'));
     } catch (e) {
       if (mounted) setState(() => _error = e.toString());
     }
@@ -443,7 +444,7 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen>
                         padding: const EdgeInsets.symmetric(
                             horizontal: 20, vertical: 12)),
                     onPressed: () async {
-                      final uri = Uri.parse(widget.streamUrl);
+                      final uri = Uri.file(widget.filePath);
                       if (await canLaunchUrl(uri)) {
                         await launchUrl(uri,
                             mode: LaunchMode.externalApplication);
