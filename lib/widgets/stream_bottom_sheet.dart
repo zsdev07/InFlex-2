@@ -6,6 +6,7 @@ import '../services/stream_service.dart';
 import '../services/supabase_cache_repo.dart';
 import '../screens/debrid_resolver_screen.dart';
 import '../screens/player_screen.dart';
+import '../screens/torrent_loading_screen.dart';
 
 /// ── StreamBottomSheet ─────────────────────────────────────────────────────
 ///
@@ -188,22 +189,22 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
       return;
     }
 
-    // ── Torrent → Debrid flow ────────────────────────────────────────────
+    // ── Torrent → P2P local stream ───────────────────────────────────────────
     final magnet =
         stream.magnetLink ?? 'magnet:?xt=urn:btih:${stream.infoHash}';
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => DebridResolverScreen(
-          imdbId: _imdbId ?? widget.item.id.toString(),
+        builder: (_) => TorrentLoadingScreen(
           magnetLink: magnet,
           movieTitle: widget.item.title,
           quality: stream.quality,
+          // Optional debug note shown in the collapsible debug card:
+          // debugNote: 'infoHash: ${stream.infoHash}',
         ),
       ),
     );
   }
-
   // ── BUILD ──────────────────────────────────────────────────────────────────
 
   @override
