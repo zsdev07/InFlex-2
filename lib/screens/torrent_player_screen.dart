@@ -49,7 +49,6 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen>
 
   StreamSubscription<TorrentState>? _engineSub;
   Timer? _overlayTimer;
-  Timer? _windowTimer;
 
   bool _showOverlay = true;
   bool _locked = false;
@@ -79,10 +78,6 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen>
       }
     });
 
-    // Report position to engine every 3s for sliding window
-    _windowTimer =
-        Timer.periodic(const Duration(seconds: 3), (_) => _reportPosition());
-
     // Listen to engine state for live HUD
     _engineSub = widget.engine.stateStream.listen((s) {
       if (mounted) setState(() => _engineState = s);
@@ -98,7 +93,6 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen>
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
     _overlayTimer?.cancel();
-    _windowTimer?.cancel();
     _engineSub?.cancel();
 
     _player.dispose();
@@ -111,14 +105,6 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen>
       await _player.open(Media(widget.streamUrl));
     } catch (e) {
       if (mounted) setState(() => _error = e.toString());
-    }
-  }
-
-  void _reportPosition() {
-    final pos = _player.state.position;
-    final dur = _player.state.duration;
-    if (dur.inSeconds > 0) {
-      widget.engine.onPlaybackProgress(pos, dur);
     }
   }
 
@@ -189,7 +175,7 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen>
         child: Stack(
           children: [
             // ── Video surface ──────────────────────────────────────────
-            Center(
+            SizedBox.expand(
               child: Video(controller: _controller),
             ),
 
