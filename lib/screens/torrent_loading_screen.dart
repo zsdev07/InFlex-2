@@ -76,7 +76,7 @@ class _TorrentLoadingScreenState extends State<TorrentLoadingScreen>
     setState(() => _state = state);
 
     // When ready → push to player screen (only once)
-    if (state.phase == TorrentPhase.ready && !_navigating) {
+    if (state.phase == TorrentPhase.streaming && state.streamUrl != null && !_navigating) {
       _navigating = true;
       Future.delayed(const Duration(milliseconds: 400), () {
         if (!mounted) return;
