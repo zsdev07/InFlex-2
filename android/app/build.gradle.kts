@@ -22,7 +22,7 @@ android {
     defaultConfig {
         applicationId = "zx.offical.inflex"
         // libtorrent_flutter requires minSdk 21 (Android 5.0+)
-        minSdk = 21
+        minSdk = 24
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
