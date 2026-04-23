@@ -6,15 +6,14 @@ import 'package:path_provider/path_provider.dart';
 
 // ── TorrentEngine ─────────────────────────────────────────────────────────────
 //
-// Wraps libtorrent_flutter to provide sequential P2P streaming.
+// Wraps libtorrent_flutter v1.8.2 to provide sequential P2P streaming.
 //
 // Design:
 //   • One active torrent at a time — calling start() cancels any prior session
 //   • Downloads into getTemporaryDirectory() — Android auto-clears this,
 //     never touches user storage
-//   • Sequential mode ON + sliding window: prioritizes the next 200 MB of
-//     pieces ahead of the playhead, deprioritizes everything behind
-//   • Exposes a localhost HTTP URL for media_kit to point at
+//   • Uses LibtorrentFlutter.instance (singleton) — never construct directly
+//   • Streaming via engine.startStream() which returns a StreamInfo with a URL
 //   • Fires TorrentState updates via a Stream for the UI to consume
 //
 // Usage:
@@ -24,25 +23,23 @@ import 'package:path_provider/path_provider.dart';
 //   final url = engine.streamUrl; // pass to PlayerScreen
 //   await engine.stop();          // call on dispose
 
-const int _kStreamPort    = 8888;   // localhost HTTP server port
-const int _kWindowMb      = 200;    // sliding window size ahead of playhead
-const int _kReadyThresholdMb = 8;   // MB buffered before we allow playback
+const int _kReadyThresholdMb = 8; // MB buffered before we allow playback
 
 enum TorrentPhase {
   idle,
-  resolving,   // fetching metadata from DHT
-  buffering,   // downloading initial buffer
-  ready,       // enough buffered — player can start
-  streaming,   // player is playing, window sliding
+  resolving,  // fetching metadata from DHT
+  buffering,  // downloading initial buffer
+  ready,      // enough buffered — player can start
+  streaming,  // player is playing
   error,
 }
 
 class TorrentState {
   final TorrentPhase phase;
-  final double downloadSpeedMbs;   // MB/s
-  final double progressPercent;    // 0–100, of entire torrent
-  final double bufferedMb;         // MB downloaded so far
-  final double totalMb;            // total torrent size
+  final double downloadSpeedMbs;  // MB/s
+  final double progressPercent;   // 0–100, of entire torrent
+  final double bufferedMb;        // MB downloaded so far
+  final double totalMb;           // total torrent size
   final int peers;
   final String? errorMessage;
   final String? streamUrl;
@@ -109,10 +106,15 @@ class TorrentEngine {
   TorrentEngine._internal();
 
   // ── Internal state ─────────────────────────────────────────────────────────
-  LibtorrentFlutter? _session;
-  Timer? _pollTimer;
-  final _stateController = StreamController<TorrentState>.broadcast();
+  // v1.8.2: use the static singleton, never construct LibtorrentFlutter()
+  final _engine = LibtorrentFlutter.instance;
 
+  int? _activeTorrentId;
+  int? _activeStreamId;
+  StreamSubscription<Map<int, TorrentInfo>>? _torrentSub;
+  StreamSubscription<Map<int, StreamInfo>>? _streamSub;
+
+  final _stateController = StreamController<TorrentState>.broadcast();
   TorrentState _current = const TorrentState(phase: TorrentPhase.idle);
 
   // ── Public API ─────────────────────────────────────────────────────────────
@@ -120,9 +122,8 @@ class TorrentEngine {
   Stream<TorrentState> get stateStream => _stateController.stream;
   TorrentState get currentState => _current;
 
-  /// The localhost URL for media_kit to point at.
-  /// Valid only when phase == ready or streaming.
-  String get streamUrl => 'http://localhost:$_kStreamPort/stream';
+  /// The localhost stream URL — valid only when phase == ready or streaming.
+  String? get streamUrl => _current.streamUrl;
 
   /// Start a new torrent session from a magnet link.
   /// Cancels any existing session first.
@@ -136,19 +137,20 @@ class TorrentEngine {
       final saveDir = Directory('${tempDir.path}/inflex_stream');
       if (!saveDir.existsSync()) saveDir.createSync(recursive: true);
 
-      _session = LibtorrentFlutter();
-
-      await _session!.addMagnet(
-        magnetLink,
-        savePath: saveDir.path,
-        sequentialDownload: true,   // pieces in order — critical for streaming
-        streamPort: _kStreamPort,   // start built-in HTTP server
+      // v1.8.2: init once with defaultSavePath (no-op if already initialised)
+      await LibtorrentFlutter.init(
+        defaultSavePath: saveDir.path,
+        fetchTrackers: true,
+        pollInterval: const Duration(milliseconds: 500),
       );
 
-      // Start polling libtorrent for status every 1 second
-      _pollTimer = Timer.periodic(const Duration(seconds: 1), (_) => _poll());
+      // v1.8.2: addMagnet() takes just the magnet string, returns int torrent ID
+      _activeTorrentId = _engine.addMagnet(magnetLink);
 
-      debugPrint('[TorrentEngine] Session started → $saveDir');
+      // Subscribe to live torrent updates from the engine stream
+      _torrentSub = _engine.torrentUpdates.listen(_onTorrentUpdate);
+
+      debugPrint('[TorrentEngine] Session started → torrentId=$_activeTorrentId');
     } catch (e) {
       _emit(_current.copyWith(
         phase: TorrentPhase.error,
@@ -159,59 +161,27 @@ class TorrentEngine {
 
   /// Stop the current session and clean up temp files.
   Future<void> stop() async {
-    _pollTimer?.cancel();
-    _pollTimer = null;
+    _torrentSub?.cancel();
+    _torrentSub = null;
+    _streamSub?.cancel();
+    _streamSub = null;
 
-    try {
-      await _session?.stop();
-    } catch (_) {}
-    _session = null;
+    // Stop stream if active
+    if (_activeStreamId != null) {
+      try { _engine.stopStream(_activeStreamId!); } catch (_) {}
+      _activeStreamId = null;
+    }
 
-    // Clean temp download dir
-    try {
-      final tempDir = await getTemporaryDirectory();
-      final saveDir = Directory('${tempDir.path}/inflex_stream');
-      if (saveDir.existsSync()) {
-        saveDir.deleteSync(recursive: true);
-      }
-    } catch (_) {}
+    // Remove torrent + delete downloaded files
+    if (_activeTorrentId != null) {
+      try {
+        _engine.removeTorrent(_activeTorrentId!, deleteFiles: true);
+      } catch (_) {}
+      _activeTorrentId = null;
+    }
 
     _emit(const TorrentState(phase: TorrentPhase.idle));
-    debugPrint('[TorrentEngine] Session stopped, temp cleaned');
-  }
-
-  /// Call this when the player reports a new playback position.
-  /// Slides the download priority window forward.
-  void onPlaybackProgress(Duration position, Duration duration) {
-    if (_session == null) return;
-    if (duration.inSeconds == 0) return;
-
-    // Calculate byte offset of current playhead
-    final totalMb = _current.totalMb;
-    if (totalMb == 0) return;
-
-    final positionFraction = position.inMilliseconds / duration.inMilliseconds;
-    final positionMb = positionFraction * totalMb;
-
-    // Prioritize pieces in the window ahead of playhead
-    final windowStartMb = positionMb;
-    final windowEndMb   = positionMb + _kWindowMb;
-
-    try {
-      _session!.setPiecePriorityRange(
-        startMb: windowStartMb,
-        endMb: windowEndMb.clamp(0, totalMb),
-        priority: 7,     // highest
-      );
-      // Deprioritize behind playhead (don't cancel — might seek back)
-      if (windowStartMb > 50) {
-        _session!.setPiecePriorityRange(
-          startMb: 0,
-          endMb: windowStartMb - 50,
-          priority: 1,   // lowest
-        );
-      }
-    } catch (_) {}
+    debugPrint('[TorrentEngine] Session stopped');
   }
 
   void dispose() {
@@ -221,43 +191,72 @@ class TorrentEngine {
 
   // ── Internal ───────────────────────────────────────────────────────────────
 
-  Future<void> _poll() async {
-    if (_session == null) return;
+  void _onTorrentUpdate(Map<int, TorrentInfo> torrents) {
+    if (_activeTorrentId == null) return;
+    final t = torrents[_activeTorrentId];
+    if (t == null) return;
 
+    final totalMb      = t.totalWanted / (1024 * 1024);
+    final downloadedMb = t.totalDone / (1024 * 1024);
+    final speedMbs     = t.downloadRate / (1024 * 1024);
+    final peers        = t.numPeers;
+    final progress     = totalMb > 0 ? (downloadedMb / totalMb) * 100 : 0.0;
+
+    TorrentPhase phase;
+
+    if (!t.hasMetadata) {
+      phase = TorrentPhase.resolving;
+    } else if (downloadedMb < _kReadyThresholdMb) {
+      phase = TorrentPhase.buffering;
+    } else if (_current.phase == TorrentPhase.buffering ||
+               _current.phase == TorrentPhase.resolving) {
+      // First time we cross the threshold — kick off the HTTP stream
+      phase = TorrentPhase.ready;
+      _startStream();
+    } else {
+      phase = TorrentPhase.streaming;
+    }
+
+    _emit(_current.copyWith(
+      phase: phase,
+      downloadSpeedMbs: speedMbs,
+      progressPercent: progress.toDouble(),
+      bufferedMb: downloadedMb,
+      totalMb: totalMb,
+      peers: peers,
+    ));
+  }
+
+  void _startStream() {
+    if (_activeTorrentId == null || _activeStreamId != null) return;
     try {
-      final status = await _session!.getStatus();
+      // v1.8.2: startStream(torrentId) picks the largest streamable file
+      // fileIndex: -1 is the default (auto-select)
+      final streamInfo = _engine.startStream(_activeTorrentId!);
+      _activeStreamId = streamInfo.id;
 
-      final totalMb      = (status.totalBytes ?? 0) / (1024 * 1024);
-      final downloadedMb = (status.downloadedBytes ?? 0) / (1024 * 1024);
-      final speedMbs     = (status.downloadRate ?? 0) / (1024 * 1024);
-      final peers        = status.numPeers ?? 0;
-      final progress     = totalMb > 0 ? (downloadedMb / totalMb) * 100 : 0.0;
+      // Update state with the stream URL immediately
+      _emit(_current.copyWith(streamUrl: streamInfo.url));
 
-      TorrentPhase phase;
+      // Watch stream updates for buffering progress
+      _streamSub = _engine.streamUpdates.listen((streams) {
+        final info = streams[_activeStreamId];
+        if (info == null) return;
+        if (info.isReady && _current.phase != TorrentPhase.streaming) {
+          _emit(_current.copyWith(
+            phase: TorrentPhase.streaming,
+            streamUrl: info.url,
+          ));
+        }
+      });
 
-      if (_current.phase == TorrentPhase.resolving && peers == 0) {
-        phase = TorrentPhase.resolving;
-      } else if (downloadedMb < _kReadyThresholdMb) {
-        phase = TorrentPhase.buffering;
-      } else if (_current.phase == TorrentPhase.buffering ||
-                 _current.phase == TorrentPhase.resolving) {
-        // First time we cross the threshold — signal ready
-        phase = TorrentPhase.ready;
-      } else {
-        phase = TorrentPhase.streaming;
-      }
-
-      _emit(_current.copyWith(
-        phase: phase,
-        downloadSpeedMbs: speedMbs,
-        progressPercent: progress.toDouble(),
-        bufferedMb: downloadedMb,
-        totalMb: totalMb,
-        peers: peers,
-        streamUrl: streamUrl,
-      ));
+      debugPrint('[TorrentEngine] Stream started → ${streamInfo.url}');
     } catch (e) {
-      debugPrint('[TorrentEngine] Poll error: $e');
+      debugPrint('[TorrentEngine] startStream error: $e');
+      _emit(_current.copyWith(
+        phase: TorrentPhase.error,
+        errorMessage: 'Failed to start HTTP stream: $e',
+      ));
     }
   }
 
