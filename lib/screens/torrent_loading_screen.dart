@@ -83,7 +83,7 @@ class _TorrentLoadingScreenState extends State<TorrentLoadingScreen>
         Navigator.of(context).pushReplacement(
           PageRouteBuilder(
             pageBuilder: (_, animation, __) => TorrentPlayerScreen(
-              streamUrl: _engine.streamUrl,
+              streamUrl: _engine.streamUrl!,
               title: widget.movieTitle,
               quality: widget.quality,
               engine: _engine,
