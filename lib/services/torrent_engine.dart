@@ -184,6 +184,11 @@ class TorrentEngine {
     debugPrint('[TorrentEngine] Session stopped');
   }
 
+  /// No-op stub — kept for API compatibility with TorrentPlayerScreen.
+  /// Piece prioritization is handled internally via startStream().
+  // ignore: avoid_returning_null_for_void
+  void onPlaybackProgress(Duration position, Duration duration) {}
+
   void dispose() {
     stop();
     _stateController.close();
