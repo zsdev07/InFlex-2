@@ -6,24 +6,29 @@ import 'package:path_provider/path_provider.dart';
 
 // ── TorrentEngine ─────────────────────────────────────────────────────────────
 //
-// Wraps libtorrent_flutter v1.8.2 to provide sequential P2P streaming.
+// Wraps libtorrent_flutter v1.8.2 to provide sequential P2P playback.
 //
 // Design:
 //   • One active torrent at a time — calling start() cancels any prior session
-//   • Downloads into getTemporaryDirectory() — Android auto-clears this,
-//     never touches user storage
+//   • Downloads into getTemporaryDirectory()/inflex_stream — Android auto-clears
+//     this, never touches user-visible storage
 //   • Uses LibtorrentFlutter.instance (singleton) — never construct directly
-//   • Streaming via engine.startStream() which returns a StreamInfo with a URL
+//   • NO localhost HTTP server — media_kit opens the file path directly via
+//     Media('file:///...'), eliminating all loopback/port-conflict issues
+//   • Auto-deletes downloaded file when stop() is called (player closed)
+//   • 500 MB sliding-window cache via maxCacheBytes — libtorrent discards
+//     already-played pieces so disk usage never exceeds the limit
 //   • Fires TorrentState updates via a Stream for the UI to consume
 //
 // Usage:
 //   final engine = TorrentEngine();
 //   engine.stateStream.listen((state) { ... });
 //   await engine.start(magnetLink);
-//   final url = engine.streamUrl; // pass to PlayerScreen
-//   await engine.stop();          // call on dispose
+//   final path = engine.filePath; // pass as Media('file:///$path')
+//   await engine.stop();          // call on dispose — deletes temp file
 
-const int _kReadyThresholdMb = 8; // MB buffered before we allow playback
+const int _kReadyThresholdMb = 8;                // MB buffered before playback
+const int _kMaxCacheBytes    = 500 * 1024 * 1024; // 500 MB cache cap
 
 enum TorrentPhase {
   idle,
@@ -36,13 +41,15 @@ enum TorrentPhase {
 
 class TorrentState {
   final TorrentPhase phase;
-  final double downloadSpeedMbs;  // MB/s
-  final double progressPercent;   // 0–100, of entire torrent
-  final double bufferedMb;        // MB downloaded so far
-  final double totalMb;           // total torrent size
+  final double downloadSpeedMbs;
+  final double progressPercent;
+  final double bufferedMb;
+  final double totalMb;
   final int peers;
   final String? errorMessage;
-  final String? streamUrl;
+  /// Local file path — valid when phase == ready or streaming.
+  /// Open with: Media('file:///$filePath')
+  final String? filePath;
 
   const TorrentState({
     required this.phase,
@@ -52,7 +59,7 @@ class TorrentState {
     this.totalMb = 0,
     this.peers = 0,
     this.errorMessage,
-    this.streamUrl,
+    this.filePath,
   });
 
   TorrentState copyWith({
@@ -63,7 +70,7 @@ class TorrentState {
     double? totalMb,
     int? peers,
     String? errorMessage,
-    String? streamUrl,
+    String? filePath,
   }) =>
       TorrentState(
         phase: phase ?? this.phase,
@@ -73,25 +80,20 @@ class TorrentState {
         totalMb: totalMb ?? this.totalMb,
         peers: peers ?? this.peers,
         errorMessage: errorMessage ?? this.errorMessage,
-        streamUrl: streamUrl ?? this.streamUrl,
+        filePath: filePath ?? this.filePath,
       );
 
   String get displayMessage {
     switch (phase) {
-      case TorrentPhase.idle:
-        return 'Idle';
-      case TorrentPhase.resolving:
-        return 'Connecting to peers via DHT...';
+      case TorrentPhase.idle:      return 'Idle';
+      case TorrentPhase.resolving: return 'Connecting to peers via DHT...';
       case TorrentPhase.buffering:
         return peers == 0
             ? 'Finding peers...'
             : 'Buffering from $peers peers • ${downloadSpeedMbs.toStringAsFixed(1)} MB/s';
-      case TorrentPhase.ready:
-        return 'Buffer ready — starting player';
-      case TorrentPhase.streaming:
-        return 'Streaming • ${downloadSpeedMbs.toStringAsFixed(1)} MB/s';
-      case TorrentPhase.error:
-        return errorMessage ?? 'Stream error';
+      case TorrentPhase.ready:     return 'Buffer ready — starting player';
+      case TorrentPhase.streaming: return 'Streaming • ${downloadSpeedMbs.toStringAsFixed(1)} MB/s';
+      case TorrentPhase.error:     return errorMessage ?? 'Stream error';
     }
   }
 
@@ -106,48 +108,42 @@ class TorrentEngine {
   TorrentEngine._internal();
 
   // ── Internal state ─────────────────────────────────────────────────────────
-  // v1.8.2: use the static singleton, never construct LibtorrentFlutter()
   final _engine = LibtorrentFlutter.instance;
 
   int? _activeTorrentId;
-  int? _activeStreamId;
   StreamSubscription<Map<int, TorrentInfo>>? _torrentSub;
-  StreamSubscription<Map<int, StreamInfo>>? _streamSub;
 
   final _stateController = StreamController<TorrentState>.broadcast();
   TorrentState _current = const TorrentState(phase: TorrentPhase.idle);
+
+  Directory? _saveDir;
 
   // ── Public API ─────────────────────────────────────────────────────────────
 
   Stream<TorrentState> get stateStream => _stateController.stream;
   TorrentState get currentState => _current;
 
-  /// The localhost stream URL — valid only when phase == ready or streaming.
-  String? get streamUrl => _current.streamUrl;
+  /// Local file path — valid when phase == ready or streaming.
+  String? get filePath => _current.filePath;
 
-  /// Start a new torrent session from a magnet link.
-  /// Cancels any existing session first.
+  /// Start a new torrent session. Cancels any prior session first.
   Future<void> start(String magnetLink) async {
-    await stop(); // clean up previous session
-
+    await stop();
     _emit(_current.copyWith(phase: TorrentPhase.resolving));
 
     try {
       final tempDir = await getTemporaryDirectory();
-      final saveDir = Directory('${tempDir.path}/inflex_stream');
-      if (!saveDir.existsSync()) saveDir.createSync(recursive: true);
+      _saveDir = Directory('${tempDir.path}/inflex_stream');
+      if (!_saveDir!.existsSync()) _saveDir!.createSync(recursive: true);
 
-      // v1.8.2: init once with defaultSavePath (no-op if already initialised)
       await LibtorrentFlutter.init(
-        defaultSavePath: saveDir.path,
+        defaultSavePath: _saveDir!.path,
         fetchTrackers: true,
         pollInterval: const Duration(milliseconds: 500),
+        maxCacheBytes: _kMaxCacheBytes,
       );
 
-      // v1.8.2: addMagnet() takes just the magnet string, returns int torrent ID
       _activeTorrentId = _engine.addMagnet(magnetLink);
-
-      // Subscribe to live torrent updates from the engine stream
       _torrentSub = _engine.torrentUpdates.listen(_onTorrentUpdate);
 
       debugPrint('[TorrentEngine] Session started → torrentId=$_activeTorrentId');
@@ -159,20 +155,12 @@ class TorrentEngine {
     }
   }
 
-  /// Stop the current session and clean up temp files.
+  /// Stop session, remove torrent, delete temp files.
+  /// Call this when the player closes.
   Future<void> stop() async {
     _torrentSub?.cancel();
     _torrentSub = null;
-    _streamSub?.cancel();
-    _streamSub = null;
 
-    // Stop stream if active
-    if (_activeStreamId != null) {
-      try { _engine.stopStream(_activeStreamId!); } catch (_) {}
-      _activeStreamId = null;
-    }
-
-    // Remove torrent + delete downloaded files
     if (_activeTorrentId != null) {
       try {
         _engine.removeTorrent(_activeTorrentId!, deleteFiles: true);
@@ -180,12 +168,12 @@ class TorrentEngine {
       _activeTorrentId = null;
     }
 
+    _cleanupSaveDir();
     _emit(const TorrentState(phase: TorrentPhase.idle));
-    debugPrint('[TorrentEngine] Session stopped');
+    debugPrint('[TorrentEngine] Session stopped — temp files deleted');
   }
 
-  /// No-op stub — kept for API compatibility with TorrentPlayerScreen.
-  /// Piece prioritization is handled internally via startStream().
+  /// Stub — kept for API compatibility.
   // ignore: avoid_returning_null_for_void
   void onPlaybackProgress(Duration position, Duration duration) {}
 
@@ -215,9 +203,8 @@ class TorrentEngine {
       phase = TorrentPhase.buffering;
     } else if (_current.phase == TorrentPhase.buffering ||
                _current.phase == TorrentPhase.resolving) {
-      // First time we cross the threshold — kick off the HTTP stream
       phase = TorrentPhase.ready;
-      _startStream();
+      _resolveFilePath(t);
     } else {
       phase = TorrentPhase.streaming;
     }
@@ -232,43 +219,49 @@ class TorrentEngine {
     ));
   }
 
-  void _startStream() {
-    if (_activeTorrentId == null || _activeStreamId != null) return;
+  /// Find the largest file in the torrent's save directory (the video file).
+  void _resolveFilePath(TorrentInfo t) {
     try {
-      // v1.8.2: startStream(torrentId) picks the largest streamable file
-      // fileIndex: -1 is the default (auto-select)
-      final streamInfo = _engine.startStream(_activeTorrentId!);
-      _activeStreamId = streamInfo.id;
+      final dir = Directory(t.savePath);
+      if (!dir.existsSync()) {
+        debugPrint('[TorrentEngine] savePath not yet on disk: ${t.savePath}');
+        return;
+      }
 
-      // Update state with the stream URL immediately
-      _emit(_current.copyWith(streamUrl: streamInfo.url));
+      final files = dir
+          .listSync(recursive: true)
+          .whereType<File>()
+          .toList()
+        ..sort((a, b) => b.lengthSync().compareTo(a.lengthSync()));
 
-      // Watch stream updates for buffering progress
-      _streamSub = _engine.streamUpdates.listen((streams) {
-        final info = streams[_activeStreamId];
-        if (info == null) return;
-        if (info.isReady && _current.phase != TorrentPhase.streaming) {
-          _emit(_current.copyWith(
-            phase: TorrentPhase.streaming,
-            streamUrl: info.url,
-          ));
-        }
-      });
+      if (files.isEmpty) {
+        debugPrint('[TorrentEngine] No files found in savePath');
+        return;
+      }
 
-      debugPrint('[TorrentEngine] Stream started → ${streamInfo.url}');
+      final videoFile = files.first;
+      debugPrint('[TorrentEngine] File path resolved → ${videoFile.path}');
+      _emit(_current.copyWith(filePath: videoFile.path));
     } catch (e) {
-      debugPrint('[TorrentEngine] startStream error: $e');
-      _emit(_current.copyWith(
-        phase: TorrentPhase.error,
-        errorMessage: 'Failed to start HTTP stream: $e',
-      ));
+      debugPrint('[TorrentEngine] _resolveFilePath error: $e');
+    }
+  }
+
+  void _cleanupSaveDir() {
+    try {
+      if (_saveDir != null && _saveDir!.existsSync()) {
+        _saveDir!.deleteSync(recursive: true);
+        debugPrint('[TorrentEngine] Cleaned save dir: ${_saveDir!.path}');
+      }
+    } catch (e) {
+      debugPrint('[TorrentEngine] cleanup error (non-fatal): $e');
+    } finally {
+      _saveDir = null;
     }
   }
 
   void _emit(TorrentState state) {
     _current = state;
-    if (!_stateController.isClosed) {
-      _stateController.add(state);
-    }
+    if (!_stateController.isClosed) _stateController.add(state);
   }
 }
