@@ -140,7 +140,6 @@ class TorrentEngine {
         defaultSavePath: _saveDir!.path,
         fetchTrackers: true,
         pollInterval: const Duration(milliseconds: 500),
-        maxCacheBytes: _kMaxCacheBytes,
       );
 
       _activeTorrentId = _engine.addMagnet(magnetLink);
