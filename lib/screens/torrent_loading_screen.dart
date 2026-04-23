@@ -76,14 +76,14 @@ class _TorrentLoadingScreenState extends State<TorrentLoadingScreen>
     setState(() => _state = state);
 
     // When ready → push to player screen (only once)
-    if (state.phase == TorrentPhase.streaming && state.streamUrl != null && !_navigating) {
+    if (state.phase == TorrentPhase.streaming && state.filePath != null && !_navigating) {
       _navigating = true;
       Future.delayed(const Duration(milliseconds: 400), () {
         if (!mounted) return;
         Navigator.of(context).pushReplacement(
           PageRouteBuilder(
             pageBuilder: (_, animation, __) => TorrentPlayerScreen(
-              streamUrl: _engine.streamUrl!,
+              filePath: _engine.filePath!,
               title: widget.movieTitle,
               quality: widget.quality,
               engine: _engine,
@@ -553,8 +553,12 @@ class _DebugCard extends StatelessWidget {
                         '${state.bufferedMb.toStringAsFixed(1)} / ${state.totalMb.toStringAsFixed(1)} MB'),
                     _DebugRow('Progress',
                         '${state.progressPercent.toStringAsFixed(1)}%'),
-                    _DebugRow('Stream URL',
-                        'http://localhost:8888/stream'),
+                    _DebugRow('File Path',
+                        state.filePath != null
+                            ? state.filePath!.length > 50
+                                ? '...${state.filePath!.substring(state.filePath!.length - 50)}'
+                                : state.filePath!
+                            : '—'),
                     const SizedBox(height: 6),
                     _DebugRow(
                       'Magnet',
