@@ -13,9 +13,18 @@ dependencies:
   # HTTP
   http: ^1.2.1
 
-  # Video Player
-  video_player: ^2.8.6
-  chewie: ^1.7.0
+  # ── P2P Torrent Engine (replaces Render/GitHub Actions loop) ──────────────
+  # Wraps libtorrent 2.0 via Dart FFI. Built-in sequential download +
+  # HTTP streaming server on localhost. No remote upload needed.
+  libtorrent_flutter: ^1.8.2
+
+  # ── Video Player (replaces video_player + chewie) ─────────────────────────
+  # Native media engine. Handles HEVC/H.265, MKV, HDR out of the box.
+  media_kit: ^1.1.11
+  media_kit_video: ^1.2.4
+  media_kit_libs_android_video: ^1.0.9   # Android native libs
+
+  # URL launcher — kept for "Open in External Player" fallback
   url_launcher: ^6.3.0
 
   # WebView (embed source fallback)
@@ -33,14 +42,13 @@ dependencies:
   hive: ^2.2.3
   hive_flutter: ^1.1.0
 
-  # Supabase — cache DB for magnet_link ↔ file_id mapping
+  # Supabase — Telegram cache fast path (kept)
   supabase_flutter: ^2.5.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
-  # hive_generator removed — no Hive type adapters needed
   build_runner: ^2.4.9
 
 flutter:
