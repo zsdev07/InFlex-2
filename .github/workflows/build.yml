@@ -30,6 +30,13 @@ jobs:
       - name: Flutter Version Info
         run: flutter --version
 
+      # This clears stale outputs and forces a re-fetch of the prebuilt binaries
+      - name: Deep Clean and Purge Cache
+        run: |
+          flutter clean
+          rm -rf ~/.pub-cache/hosted/pub.dev/libtorrent_flutter-*/prebuilt
+          rm -f pubspec.lock
+
       - name: Install Dependencies
         run: flutter pub get
 
