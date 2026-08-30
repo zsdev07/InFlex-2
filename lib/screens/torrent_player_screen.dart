@@ -102,9 +102,10 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen>
 
   Future<void> _openStream() async {
     try {
-      // widget.streamUrl is already a full HTTP URL served by the
-      // libtorrent_flutter native layer (head+tail preloaded, read-ahead
-      // cached) — open it directly, no file:// wrapping needed.
+      // widget.streamUrl is already a full HTTP URL served by
+      // InTorrent's native layer (Range-request server that blocks
+      // until requested bytes are downloaded) — open it directly, no
+      // file:// wrapping needed.
       await _player.open(Media(widget.streamUrl));
     } catch (e) {
       if (mounted) setState(() => _error = e.toString());
