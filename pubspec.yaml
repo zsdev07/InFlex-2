@@ -14,9 +14,15 @@ dependencies:
   http: ^1.2.1
 
   # ── P2P Torrent Engine (replaces Render/GitHub Actions loop) ──────────────
-  # Wraps libtorrent 2.0 via Dart FFI. Built-in sequential download +
-  # HTTP streaming server on localhost. No remote upload needed.
-  libtorrent_flutter: ^1.8.2
+  # Our own plugin (github.com/<ORG>/InTorrent) - wraps libtorrent 2.1 via
+  # Dart FFI. Not on pub.dev yet, hence the git dependency. Built-in
+  # sequential download + HTTP streaming server on localhost.
+  #
+  # PLACEHOLDER: replace <ORG> below with the actual GitHub org/user once
+  # confirmed - left unresolved deliberately rather than guessed.
+  intorrent:
+    git:
+      url: https://github.com/zsdev07/InTorrent.git
 
   # ── Video Player (replaces video_player + chewie) ─────────────────────────
   # Native media engine. Handles HEVC/H.265, MKV, HDR out of the box.
