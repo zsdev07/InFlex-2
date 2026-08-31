@@ -69,13 +69,48 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen>
       DeviceOrientation.landscapeRight,
     ]);
 
-    _player = Player();
+    _player = Player(
+      configuration: const PlayerConfiguration(
+        // Bumped from default (none) purely for debugging the ~5s
+        // silent-stop issue — mpv's own log is the only place that
+        // will show a demuxer/probe/cache-pause reason that never
+        // reaches _player.stream.error. Dial back to .warn once
+        // this is diagnosed; verbose logging is noisy in normal use.
+        logLevel: MPVLogLevel.debug,
+      ),
+    );
     _controller = VideoController(_player);
 
     _player.stream.error.listen((err) {
+      // ignore: avoid_print
+      print('[TorrentPlayerScreen] player error: $err');
       if (mounted) {
         setState(() => _error = err);
       }
+    });
+
+    // mpv's own log — this is the one channel that can explain a
+    // stop/pause that never surfaces on stream.error (e.g. demuxer
+    // probe failures, cache-pause, EOF-vs-underrun). Not filtered by
+    // level here on purpose so nothing gets missed while we're
+    // hunting for the 5s cutoff.
+    _player.stream.log.listen((log) {
+      // ignore: avoid_print
+      print('[mpv:${log.level}] ${log.prefix}: ${log.text}');
+    });
+
+    // Correlate mpv's playing/buffering transitions against wall-clock
+    // time and download progress, so we can line this up against the
+    // wakelock-drop timestamp in logcat.
+    _player.stream.buffering.listen((buffering) {
+      // ignore: avoid_print
+      print('[TorrentPlayerScreen] buffering=$buffering '
+          'pos=${_player.state.position} at ${DateTime.now()}');
+    });
+    _player.stream.playing.listen((playing) {
+      // ignore: avoid_print
+      print('[TorrentPlayerScreen] playing=$playing '
+          'pos=${_player.state.position} at ${DateTime.now()}');
     });
 
     // Listen to engine state for live HUD
