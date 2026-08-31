@@ -37,9 +37,9 @@ jobs:
           rm -f pubspec.lock
 
       - name: Install Dependencies
-        run:  |
-           flutter pub get
-           flutter pub upgrade intorrent
+        run: |
+          flutter pub get
+          flutter pub upgrade intorrent
 
       - name: Run Build Runner
         run: dart run build_runner build --delete-conflicting-outputs
@@ -48,23 +48,26 @@ jobs:
         run: flutter analyze --no-fatal-infos
         continue-on-error: true
 
-      # Split-per-ABI only - no separate "fat"/universal build. It was
-      # rebuilding the entire native libtorrent+InTorrent stack a 4th
-      # time (once more per-ABI, bundled together) on top of whatever
-      # the split build already left on disk, and reliably blew through
-      # the runner's disk space doing it. Nobody installs the universal
-      # APK on a real device anyway - the split ones cover every real
-      # architecture already.
-      - name: Build Split APKs
-        run: flutter build apk --release --split-per-abi
+      # Single ABI only, for now - every test/device this whole project
+      # has been built/verified against is arm64. Also avoids two
+      # separate problems multi-ABI builds hit here: (1) compiling
+      # libtorrent from scratch 3x (once per ABI) was eating almost
+      # this runner's entire disk budget by itself, and (2) Gradle runs
+      # each variant's resource-merge task in parallel by default, and
+      # two variants can race to create the same output directory
+      # (e.g. media_kit_libs_android_video's merged_res/.../values-it),
+      # which Gradle reports as a hard failure even though nothing is
+      # actually wrong. One ABI means neither problem has anything to
+      # bump into. Revisit --split-per-abi (plus a disk-space-freeing
+      # step first) once real arm32/x86_64 devices need testing.
+      - name: Build APK (arm64 only)
+        run: flutter build apk --release --target-platform android-arm64
 
-      - name: Rename APKs
+      - name: Rename APK
         run: |
           cd build/app/outputs/flutter-apk/
           VERSION=$(grep 'version:' ../../../../pubspec.yaml | head -1 | awk '{print $2}' | cut -d'+' -f1)
-          [ -f app-arm64-v8a-release.apk ]   && mv app-arm64-v8a-release.apk   InFlex-v${VERSION}-arm64.apk
-          [ -f app-armeabi-v7a-release.apk ] && mv app-armeabi-v7a-release.apk InFlex-v${VERSION}-arm32.apk
-          [ -f app-x86_64-release.apk ]      && mv app-x86_64-release.apk      InFlex-v${VERSION}-x86_64.apk
+          mv app-release.apk InFlex-v${VERSION}-arm64.apk
           ls -lh *.apk
 
       - name: Upload APK Artifacts
