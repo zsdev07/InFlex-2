@@ -119,7 +119,30 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen>
     });
 
     _startHideTimer();
-    _openStream();
+    _initAndOpen();
+  }
+
+  Future<void> _initAndOpen() async {
+    // media_kit hardcodes network-timeout=5 for every Player it creates
+    // (see media_kit's player/native/player/real.dart) - silently
+    // overriding mpv's own upstream default of 60s. That 5s figure is
+    // media_kit's, not mpv's or ours: confirmed via mpv's source
+    // (stream/network.c: `.timeout = 60`, no runtime-immutability flag
+    // on the option) and via media_kit's own source (the override is
+    // applied exactly once at player-creation time, never reapplied on
+    // open(), so setting it here - once, before the first open() -
+    // holds for this player's whole lifetime).
+    //
+    // 5s is far too tight for a torrent stream: the very first piece a
+    // freshly-connecting swarm needs to serve byte 0 can legitimately
+    // take longer than that depending on peer luck, with nothing wrong
+    // on our end - confirmed in testing, where mpv aborted with
+    // "Failed to open" at a precise ~5.1s mark even while the swarm was
+    // healthy and downloading fine, or (separately) even before any
+    // piece had completed at all. Restoring mpv's own real default
+    // rather than picking an arbitrary number.
+    await _player.setProperty('network-timeout', '60');
+    await _openStream();
   }
 
   @override
