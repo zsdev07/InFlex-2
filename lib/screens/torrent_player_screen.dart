@@ -141,7 +141,16 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen>
     // healthy and downloading fine, or (separately) even before any
     // piece had completed at all. Restoring mpv's own real default
     // rather than picking an arbitrary number.
-    await _player.setProperty('network-timeout', '60');
+    //
+    // setProperty isn't on Player itself - it's declared on NativePlayer
+    // (media_kit's concrete platform implementation), reached through
+    // Player's public `platform` field (typed as the abstract
+    // PlatformPlayer, which doesn't declare it either). Hence the type
+    // check below instead of calling it directly on _player.
+    final platform = _player.platform;
+    if (platform is NativePlayer) {
+      await platform.setProperty('network-timeout', '60');
+    }
     await _openStream();
   }
 
