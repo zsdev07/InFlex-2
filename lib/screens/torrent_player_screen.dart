@@ -71,12 +71,11 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen>
 
     _player = Player(
       configuration: const PlayerConfiguration(
-        // Bumped from default (none) purely for debugging the ~5s
-        // silent-stop issue — mpv's own log is the only place that
-        // will show a demuxer/probe/cache-pause reason that never
-        // reaches _player.stream.error. Dial back to .warn once
-        // this is diagnosed; verbose logging is noisy in normal use.
-        logLevel: MPVLogLevel.debug,
+        // Detailed mpv logs were useful while diagnosing the first-piece
+        // failure, but they generate a large amount of work during playback.
+        // Keep warnings/errors visible without forwarding every cache and
+        // packet event through Flutter's logging pipeline.
+        logLevel: MPVLogLevel.warn,
       ),
     );
     _controller = VideoController(_player);
@@ -150,6 +149,14 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen>
     final platform = _player.platform;
     if (platform is NativePlayer) {
       await platform.setProperty('network-timeout', '60');
+
+      // Make mpv keep an in-memory read-ahead cache for the local torrent
+      // HTTP stream. InTorrent promotes whichever range mpv requests, so a
+      // larger request window lets it fetch upcoming pieces before playback
+      // reaches them. This does not invent bandwidth: a torrent whose active
+      // peers are slower than the video's bitrate can still buffer.
+      await platform.setProperty('cache', 'yes');
+      await platform.setProperty('demuxer-readahead-secs', '45');
     }
     await _openStream();
   }
