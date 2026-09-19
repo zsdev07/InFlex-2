@@ -13,7 +13,7 @@ import '../services/torrent_engine.dart';
 // Receives the localhost stream URL from TorrentLoadingScreen after the
 // engine signals TorrentPhase.ready. Also receives the TorrentEngine
 // reference so it can:
-//   • Report playback position for the sliding window
+//   • Report play/pause + seeks (drives the 8 s pause -> 30 min prefetch)
 //   • Stop the engine cleanly on dispose
 //
 // Player: media_kit — handles HEVC/H.265, MKV, HDR natively on Android.
@@ -48,7 +48,20 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen>
   late final VideoController _controller;
 
   StreamSubscription<TorrentState>? _engineSub;
+  StreamSubscription<bool>? _playingSub;
+  StreamSubscription<Duration>? _posSub;
   Timer? _overlayTimer;
+
+  // mpv can report `time-pos` up to once per video frame. Feeding that
+  // straight into a StreamBuilder that wraps the whole overlay rebuilt the
+  // glass gradients, buttons and slider dozens of times per second - on the
+  // same thread that also runs the local HTTP server. This re-emits the
+  // latest position at most 4x per second (trailing edge, so the final
+  // position after a seek/pause is never lost).
+  final StreamController<Duration> _positionOut =
+      StreamController<Duration>.broadcast();
+  Timer? _posTimer;
+  Duration _lastPos = Duration.zero;
 
   bool _showOverlay = true;
   bool _locked = false;
@@ -71,15 +84,28 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen>
 
     _player = Player(
       configuration: const PlayerConfiguration(
-        // Bumped from default (none) purely for debugging the ~5s
-        // silent-stop issue — mpv's own log is the only place that
-        // will show a demuxer/probe/cache-pause reason that never
-        // reaches _player.stream.error. Dial back to .warn once
-        // this is diagnosed; verbose logging is noisy in normal use.
-        logLevel: MPVLogLevel.debug,
+        // Was MPVLogLevel.debug with every line print()-ed to logcat: each
+        // message crosses native -> Dart and is formatted on the UI
+        // isolate, hundreds per second while buffering. Warnings and
+        // errors are all we need in normal use.
+        logLevel: MPVLogLevel.warn,
+        // mpv's demuxer read-ahead (media_kit default: 32 MiB). A bigger
+        // buffer rides out longer swarm hiccups; the played-data
+        // "back buffer" is trimmed again in _initAndOpen().
+        bufferSize: 64 * 1024 * 1024,
       ),
     );
-    _controller = VideoController(_player);
+    _controller = VideoController(
+      _player,
+      // Your log showed `hevc_mediacodec: Both surface and native_window
+      // are NULL` - the zero-copy MediaCodec path failing to initialise
+      // and mpv silently falling back to (slow, janky) software decoding.
+      // mediacodec-copy needs no surface. Remove this argument if you
+      // ever see a regression on a specific device.
+      configuration: const VideoControllerConfiguration(
+        hwdec: 'mediacodec-copy',
+      ),
+    );
 
     _player.stream.error.listen((err) {
       // ignore: avoid_print
@@ -89,28 +115,23 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen>
       }
     });
 
-    // mpv's own log — this is the one channel that can explain a
-    // stop/pause that never surfaces on stream.error (e.g. demuxer
-    // probe failures, cache-pause, EOF-vs-underrun). Not filtered by
-    // level here on purpose so nothing gets missed while we're
-    // hunting for the 5s cutoff.
-    _player.stream.log.listen((log) {
-      // ignore: avoid_print
-      print('[mpv:${log.level}] ${log.prefix}: ${log.text}');
+    // Tell the engine when playback pauses/resumes: after 8 s paused it
+    // prefetches the next 30 minutes of the movie in order; pressing play
+    // cancels that (see TorrentEngine.onPlayingChanged).
+    _playingSub = _player.stream.playing.listen((playing) {
+      widget.engine.onPlayingChanged(
+        playing: playing,
+        duration: _player.state.duration,
+      );
     });
 
-    // Correlate mpv's playing/buffering transitions against wall-clock
-    // time and download progress, so we can line this up against the
-    // wakelock-drop timestamp in logcat.
-    _player.stream.buffering.listen((buffering) {
-      // ignore: avoid_print
-      print('[TorrentPlayerScreen] buffering=$buffering '
-          'pos=${_player.state.position} at ${DateTime.now()}');
-    });
-    _player.stream.playing.listen((playing) {
-      // ignore: avoid_print
-      print('[TorrentPlayerScreen] playing=$playing '
-          'pos=${_player.state.position} at ${DateTime.now()}');
+    // Throttled position feed for the overlay (see _positionOut above).
+    _posSub = _player.stream.position.listen((p) {
+      _lastPos = p;
+      _posTimer ??= Timer(const Duration(milliseconds: 250), () {
+        _posTimer = null;
+        if (!_positionOut.isClosed) _positionOut.add(_lastPos);
+      });
     });
 
     // Listen to engine state for live HUD
@@ -150,6 +171,17 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen>
     final platform = _player.platform;
     if (platform is NativePlayer) {
       await platform.setProperty('network-timeout', '60');
+
+      // When the cache runs dry mpv pauses and resumes after only 1 s of
+      // data (default) - so on a marginal swarm it flaps between
+      // "buffering" and "playing" every few seconds, which is exactly the
+      // glitchy loading-spinner behaviour. Wait for a proper cushion
+      // before resuming instead.
+      await platform.setProperty('cache-pause-wait', '8');
+
+      // Keep only 16 MiB of already-played data (bufferSize above applies
+      // to both directions) so the bigger read-ahead doesn't double RAM.
+      await platform.setProperty('demuxer-max-back-bytes', '16777216');
     }
     await _openStream();
   }
@@ -161,6 +193,10 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen>
 
     _overlayTimer?.cancel();
     _engineSub?.cancel();
+    _playingSub?.cancel();
+    _posSub?.cancel();
+    _posTimer?.cancel();
+    _positionOut.close();
 
     _player.dispose();
     widget.engine.stop(); // stop torrent + clean temp files
@@ -225,6 +261,7 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen>
             ? dur
             : newPos;
     _player.seek(clamped);
+    widget.engine.onUserSeek(duration: dur);
   }
 
   String _fmt(Duration d) {
@@ -264,7 +301,8 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen>
 
   Widget _buildOverlay() {
     return StreamBuilder<Duration>(
-      stream: _player.stream.position,
+      stream: _positionOut.stream,
+      initialData: _player.state.position,
       builder: (context, posSnap) {
         final pos = posSnap.data ?? Duration.zero;
         final dur = _player.state.duration;
@@ -401,6 +439,7 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen>
                               _player.seek(Duration(
                                   milliseconds:
                                       (v * dur.inMilliseconds).round()));
+                              widget.engine.onUserSeek(duration: dur);
                               _resetTimer();
                             },
                           ),
@@ -676,6 +715,9 @@ class _EngineHud extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (state.phase != TorrentPhase.streaming) return const SizedBox();
+    final label = state.prefetching
+        ? 'Prefetch ${(state.prefetchPct * 100).round()}%'
+        : '${state.downloadSpeedMbs.toStringAsFixed(1)} MB/s';
     return Container(
       padding:
           const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -692,7 +734,7 @@ class _EngineHud extends StatelessWidget {
               color: Color(0xFF22c55e), size: 11),
           const SizedBox(width: 4),
           Text(
-            '${state.downloadSpeedMbs.toStringAsFixed(1)} MB/s',
+            label,
             style: const TextStyle(
                 color: Color(0xFF22c55e),
                 fontSize: 10,
