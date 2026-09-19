@@ -37,12 +37,16 @@ import 'package:intorrent/intorrent.dart' as intorrent;
 //     extension, falls back to the largest file overall if none match
 //     (torrents often bundle subs/NFO/poster alongside the video - see
 //     InTorrent's listFiles() doc comment).
-//   • No separate "ready" (buffer preloaded) signal - InTorrent's HTTP
-//     stream server (IntorrentStreamServer) already blocks each byte-range
-//     request until the data is actually downloaded, so there's nothing
-//     extra to wait for here. We transition to `ready` the moment
-//     streamUrl() returns a URL, and let media_kit's own buffering UI
-//     handle anything genuinely slow - same effect, simpler code.
+//   • Pre-buffer gate: we used to flip to `ready` the moment streamUrl()
+//     returned a URL, so the player opened with ZERO bytes buffered and
+//     spent its first minute rebuffering. Now `ready` waits until the head
+//     of the file is contiguously downloaded (see _poll / _preBufferTarget),
+//     capped by _maxPreBufferWait so a weak swarm never blocks playback
+//     forever. bufferPct during that phase is the real pre-buffer fill.
+//   • Pause-prefetch: when the player has been paused for 8 s the engine
+//     asks InTorrent to download the next 30 minutes of the movie in strict
+//     order at full speed; pressing play cancels it and everything already
+//     downloaded is kept. See onPlayingChanged() / _startPrefetch().
 //   • No instantaneous download-rate field - only cumulative
 //     downloadedBytes. Speed is computed here from the delta between
 //     polls.
@@ -76,9 +80,9 @@ class TorrentState {
   final double downloadSpeedMbs;
   final double bufferSeconds;
 
-  /// Buffer fill, 0.0–1.0. Mapped directly from InTorrent's overall
-  /// download progress - InTorrent has no separate head/tail preload
-  /// concept the way the old plugin did (see file header).
+  /// Buffer fill, 0.0–1.0. While phase == buffering this is the real
+  /// pre-buffer fill (contiguous head bytes / target). Afterwards it's
+  /// InTorrent's overall download progress.
   final double bufferPct;
   final int peers;
   final String? errorMessage;
@@ -104,6 +108,11 @@ class TorrentState {
   /// falling back to its "—" empty-state.
   final String libraryVersion;
 
+  /// True while a pause-prefetch is running, and how much of its window
+  /// (0.0-1.0) is already downloaded.
+  final bool prefetching;
+  final double prefetchPct;
+
   const TorrentState({
     required this.phase,
     this.downloadSpeedMbs = 0,
@@ -117,6 +126,8 @@ class TorrentState {
     this.isPaused = false,
     this.queuePosition = -1,
     this.libraryVersion = '',
+    this.prefetching = false,
+    this.prefetchPct = 0,
   });
 
   TorrentState copyWith({
@@ -132,6 +143,8 @@ class TorrentState {
     bool? isPaused,
     int? queuePosition,
     String? libraryVersion,
+    bool? prefetching,
+    double? prefetchPct,
   }) =>
       TorrentState(
         phase: phase ?? this.phase,
@@ -146,6 +159,8 @@ class TorrentState {
         isPaused: isPaused ?? this.isPaused,
         queuePosition: queuePosition ?? this.queuePosition,
         libraryVersion: libraryVersion ?? this.libraryVersion,
+        prefetching: prefetching ?? this.prefetching,
+        prefetchPct: prefetchPct ?? this.prefetchPct,
       );
 
   String get displayMessage {
@@ -193,6 +208,41 @@ class TorrentEngine {
 
   int? _lastDownloadedBytes;
   DateTime? _lastPollTime;
+
+  // Which file is being streamed (set in _startStream).
+  int _fileIndex = -1;
+  int _fileSize = 0;
+
+  // ── Pre-buffer gate ────────────────────────────────────────────────────────
+  // Don't hand the stream to the player until this many bytes at the start
+  // of the file are downloaded contiguously. ~0.5% of the file, clamped to
+  // 8-32 MiB (≈ 19 MB for a 3.8 GB movie).
+  static const int _minPreBufferBytes = 8 * 1024 * 1024;
+  static const int _maxPreBufferBytes = 32 * 1024 * 1024;
+  // Never wait longer than this - a weak swarm must not block playback.
+  static const Duration _maxPreBufferWait = Duration(seconds: 25);
+  bool _gatePassed = false;
+  int _preBufferTarget = 0;
+  DateTime? _streamStartedAt;
+
+  // ── Pause-prefetch ─────────────────────────────────────────────────────────
+  /// Player must stay paused this long before the prefetch kicks in.
+  static const Duration _pauseBeforePrefetch = Duration(seconds: 8);
+
+  /// How much movie (not wall-clock) the prefetch aims to have ready.
+  static const Duration _prefetchSpan = Duration(minutes: 30);
+
+  /// Lower bound for the prefetch window, whatever the bitrate estimate says.
+  static const int _minPrefetchBytes = 32 * 1024 * 1024;
+
+  Timer? _prefetchTimer;
+  bool _playing = false;
+  bool _everPlayed = false; // ignore the initial "paused before first play"
+  Duration _playerDuration = Duration.zero;
+  bool _prefetching = false;
+  int _prefetchStart = 0;
+  int _prefetchLength = 0;
+  bool _prefetchDoneLogged = false;
 
   final _stateController = StreamController<TorrentState>.broadcast();
   TorrentState _current = const TorrentState(phase: TorrentPhase.idle);
@@ -254,6 +304,15 @@ class TorrentEngine {
     _pollTimer = null;
     _metadataTimer?.cancel();
     _metadataTimer = null;
+    _prefetchTimer?.cancel();
+    _prefetchTimer = null;
+    _prefetching = false;
+    _prefetchDoneLogged = false;
+    _playing = false;
+    _everPlayed = false;
+    _gatePassed = false;
+    _fileIndex = -1;
+    _fileSize = 0;
 
     final id = _activeId;
     if (id != null) {
@@ -273,6 +332,118 @@ class TorrentEngine {
 
   /// Stub — kept for API compatibility.
   void onPlaybackProgress(Duration position, Duration duration) {}
+
+  // ── Pause-prefetch API (called from torrent_player_screen.dart) ────────────
+
+  /// Tell the engine whether the player is currently playing.
+  ///
+  /// * playing == false: after [_pauseBeforePrefetch] of continuous pause the
+  ///   engine starts prefetching the next [_prefetchSpan] of the movie.
+  /// * playing == true: any running prefetch is cancelled and the whole file
+  ///   goes back to normal in-order streaming. Whatever the prefetch had
+  ///   already downloaded is kept - it's the same file the player reads.
+  ///
+  /// [duration] is the player's current media duration (used to convert
+  /// "30 minutes" into bytes); Duration.zero if not known yet.
+  void onPlayingChanged({required bool playing, required Duration duration}) {
+    _playing = playing;
+    if (duration > Duration.zero) _playerDuration = duration;
+
+    _prefetchTimer?.cancel();
+    _prefetchTimer = null;
+
+    if (playing) {
+      _everPlayed = true;
+      unawaited(_cancelPrefetch());
+      return;
+    }
+    _armPrefetchTimer();
+  }
+
+  /// Call when the user seeks. If the player is paused, a running prefetch
+  /// (which was anchored at the old position) is cancelled and re-armed so it
+  /// restarts from the new position after another [_pauseBeforePrefetch].
+  void onUserSeek({required Duration duration}) {
+    if (duration > Duration.zero) _playerDuration = duration;
+    if (_playing) return;
+    _prefetchTimer?.cancel();
+    _prefetchTimer = null;
+    unawaited(_cancelPrefetch());
+    _armPrefetchTimer();
+  }
+
+  void _armPrefetchTimer() {
+    if (!_streamStarted || !_everPlayed || _playing) return;
+    _prefetchTimer = Timer(_pauseBeforePrefetch, _startPrefetch);
+  }
+
+  Future<void> _startPrefetch() async {
+    _prefetchTimer = null;
+    final id = _activeId;
+    if (id == null ||
+        !_streamStarted ||
+        _playing ||
+        _prefetching ||
+        _fileIndex < 0 ||
+        _fileSize <= 0) {
+      return;
+    }
+
+    // "30 minutes of movie" -> bytes, from the real bitrate of THIS file
+    // (file size / media duration). Falls back to a 2 h runtime if the
+    // player hasn't reported a duration.
+    final seconds = _playerDuration.inMilliseconds > 0
+        ? _playerDuration.inMilliseconds / 1000.0
+        : 2 * 3600.0;
+    final bytesPerSecond = _fileSize / seconds;
+    // (min() so tiny files can't make clamp() see lower > upper and throw)
+    final minBytes =
+        _fileSize < _minPrefetchBytes ? _fileSize : _minPrefetchBytes;
+    final length = (bytesPerSecond * _prefetchSpan.inSeconds)
+        .round()
+        .clamp(minBytes, _fileSize)
+        .toInt();
+
+    // Start where the player will read NEXT (it may already hold tens of MB
+    // beyond the playhead in its own cache), not at the playhead itself.
+    final start = intorrent.streamReadCursor(id) ?? 0;
+    if (start >= _fileSize) return;
+
+    try {
+      await intorrent.startPrefetch(id, _fileIndex,
+          startByte: start, lengthBytes: length);
+    } catch (e) {
+      debugPrint('[TorrentEngine] prefetch start failed: $e');
+      return;
+    }
+
+    _prefetching = true;
+    _prefetchStart = start;
+    _prefetchLength = length;
+    _prefetchDoneLogged = false;
+    debugPrint('[TorrentEngine] prefetch started: from byte $start, '
+        '${(length / (1024 * 1024)).toStringAsFixed(0)} MiB');
+
+    // The user may have pressed play (or left) while the native call ran.
+    if (_playing || _activeId != id) {
+      await _cancelPrefetch();
+      return;
+    }
+    _emit(_current.copyWith(prefetching: true, prefetchPct: 0));
+  }
+
+  Future<void> _cancelPrefetch() async {
+    if (!_prefetching) return;
+    _prefetching = false;
+    final id = _activeId;
+    if (id != null) {
+      try {
+        await intorrent.cancelPrefetch(id);
+      } catch (_) {}
+    }
+    debugPrint('[TorrentEngine] prefetch cancelled (downloaded data kept)');
+    _emit(_current.copyWith(prefetching: false, prefetchPct: 0));
+  }
 
   void dispose() {
     stop();
@@ -295,11 +466,6 @@ class TorrentEngine {
       debugPrint('[TorrentEngine] getStatus failed: $e');
       return;
     }
-
-    debugPrint('[TorrentEngine] raw status: state=${status.state.name} '
-        'progress=${status.progress} numPeers=${status.numPeers} '
-        'numSeeds=${status.numSeeds} isPaused=${status.isPaused} '
-        'downloadedBytes=${status.downloadedBytes}');
 
     // InTorrent's status snapshot has no rate field, only cumulative
     // downloaded bytes - derive a rough instantaneous speed from the
@@ -340,10 +506,62 @@ class TorrentEngine {
       return;
     }
 
-    // Streaming/buffering path. First tick after we have a URL → ready
-    // (triggers navigation in torrent_loading_screen.dart). Every tick
-    // after that → streaming. See file header for why there's no
-    // separate native "buffer ready" signal to wait for here.
+    // Session was stopped/replaced while we were awaiting above.
+    if (_activeId != id) return;
+
+    // ── Pre-buffer gate ────────────────────────────────────────────────────
+    // Stay in `buffering` (the loading screen keeps showing peers/speed and
+    // a real progress bar) until the head of the file is contiguously
+    // downloaded - or _maxPreBufferWait has passed.
+    if (!_gatePassed) {
+      var head = 0;
+      try {
+        head = await intorrent.availableBytes(
+            id, _fileIndex, 0, _preBufferTarget);
+      } catch (_) {}
+      if (_activeId != id) return;
+
+      final waited = DateTime.now()
+          .difference(_streamStartedAt ?? DateTime.now());
+      if (head >= _preBufferTarget || waited > _maxPreBufferWait) {
+        _gatePassed = true;
+        debugPrint('[TorrentEngine] pre-buffer done: '
+            '${(head / (1024 * 1024)).toStringAsFixed(1)} MiB '
+            'after ${waited.inSeconds}s');
+      } else {
+        _emit(_current.copyWith(
+          phase: TorrentPhase.buffering,
+          downloadSpeedMbs: speedMbs,
+          bufferPct: _preBufferTarget > 0
+              ? (head / _preBufferTarget).clamp(0.0, 1.0).toDouble()
+              : 0.0,
+          peers: status.numPeers,
+          numSeeds: status.numSeeds,
+          nativeState: status.state.name,
+          isPaused: status.isPaused,
+        ));
+        return;
+      }
+    }
+
+    // ── Pause-prefetch progress (for the HUD) ────────────────────────────────
+    var prefetchPct = 0.0;
+    if (_prefetching && _prefetchLength > 0) {
+      try {
+        final got = await intorrent.availableBytes(
+            id, _fileIndex, _prefetchStart, _prefetchLength);
+        prefetchPct = (got / _prefetchLength).clamp(0.0, 1.0).toDouble();
+        if (prefetchPct >= 1.0 && !_prefetchDoneLogged) {
+          _prefetchDoneLogged = true;
+          debugPrint('[TorrentEngine] prefetch window complete');
+        }
+      } catch (_) {}
+      if (_activeId != id) return;
+    }
+
+    // Streaming path. First tick after the gate passes → ready (triggers
+    // navigation in torrent_loading_screen.dart). Every tick after that →
+    // streaming.
     final phase = (_current.phase == TorrentPhase.ready ||
             _current.phase == TorrentPhase.streaming)
         ? TorrentPhase.streaming
@@ -357,6 +575,8 @@ class TorrentEngine {
       numSeeds: status.numSeeds,
       nativeState: status.state.name,
       isPaused: status.isPaused,
+      prefetching: _prefetching,
+      prefetchPct: prefetchPct,
     ));
   }
 
@@ -369,6 +589,20 @@ class TorrentEngine {
           '${files.map((f) => f.name).join(", ")}');
 
       final url = await intorrent.streamUrl(id, fileIndex);
+
+      _fileIndex = fileIndex;
+      _fileSize = 0;
+      for (final f in files) {
+        if (f.index == fileIndex) _fileSize = f.size;
+      }
+      _preBufferTarget = (_fileSize ~/ 200)
+          .clamp(_minPreBufferBytes, _maxPreBufferBytes)
+          .toInt();
+      if (_fileSize > 0 && _preBufferTarget > _fileSize) {
+        _preBufferTarget = _fileSize;
+      }
+      _gatePassed = false;
+      _streamStartedAt = DateTime.now();
       _streamStarted = true;
 
       _emit(_current.copyWith(
