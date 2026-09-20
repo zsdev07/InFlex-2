@@ -20,6 +20,10 @@ class AppSettings {
   /// loading. Off by default: it can mean a longer wait on weak sources.
   static const String keySmartPreBuffer = 'smart_pre_buffer';
 
+  /// Hide TMDB entries with no poster / no release date / 0.0 rating (see
+  /// MediaFilter). ON by default.
+  static const String keyHideIncompleteTitles = 'hide_incomplete_titles';
+
   static Box<dynamic>? get _box =>
       Hive.isBoxOpen(boxName) ? Hive.box<dynamic>(boxName) : null;
 
@@ -28,5 +32,12 @@ class AppSettings {
 
   static Future<void> setSmartPreBuffer(bool value) async {
     await _box?.put(keySmartPreBuffer, value);
+  }
+
+  static bool get hideIncompleteTitles =>
+      (_box?.get(keyHideIncompleteTitles, defaultValue: true) as bool?) ?? true;
+
+  static Future<void> setHideIncompleteTitles(bool value) async {
+    await _box?.put(keyHideIncompleteTitles, value);
   }
 }
