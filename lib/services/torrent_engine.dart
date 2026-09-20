@@ -43,6 +43,12 @@ import 'package:intorrent/intorrent.dart' as intorrent;
 //     of the file is contiguously downloaded (see _poll / _preBufferTarget),
 //     capped by _maxPreBufferWait so a weak swarm never blocks playback
 //     forever. bufferPct during that phase is the real pre-buffer fill.
+//   • Smart pre-buffer (Settings > Experimental, default OFF): no timer -
+//     waits for a ~1% head buffer and only stops waiting when the head has
+//     not grown for 20 s (state.stalled), then the user chooses.
+//   • Which file to play: _pickVideoFile() now uses Torrentio's file name /
+//     index and the wanted season+episode (StreamFileHint), so season packs
+//     no longer play whichever episode is the biggest file.
 //   • Pause-prefetch: when the player has been paused for 8 s the engine
 //     asks InTorrent to download the next 30 minutes of the movie in strict
 //     order at full speed; pressing play cancels it and everything already
@@ -65,6 +71,19 @@ import 'package:intorrent/intorrent.dart' as intorrent;
 //   await engine.start(magnetLink);
 //   final url = engine.streamUrl; // pass straight to Media(url) — it's HTTP
 //   await engine.stop();          // call on dispose — deletes temp files
+
+/// Which file inside the torrent to stream. Torrentio tells us the video's
+/// index and (for packs) its file name; for series we also know the wanted
+/// season/episode. Without this the engine could only pick "the largest
+/// video", i.e. the WRONG episode of a season pack.
+class StreamFileHint {
+  final int? fileIdx;
+  final String? fileName;
+  final int? season;
+  final int? episode;
+
+  const StreamFileHint({this.fileIdx, this.fileName, this.season, this.episode});
+}
 
 enum TorrentPhase {
   idle,
@@ -113,6 +132,11 @@ class TorrentState {
   final bool prefetching;
   final double prefetchPct;
 
+  /// Smart pre-buffer only: the start of the movie has stopped growing for a
+  /// while (dead/slow source). The loading screen then offers to keep
+  /// waiting, play anyway, or pick another source.
+  final bool stalled;
+
   const TorrentState({
     required this.phase,
     this.downloadSpeedMbs = 0,
@@ -128,6 +152,7 @@ class TorrentState {
     this.libraryVersion = '',
     this.prefetching = false,
     this.prefetchPct = 0,
+    this.stalled = false,
   });
 
   TorrentState copyWith({
@@ -145,6 +170,7 @@ class TorrentState {
     String? libraryVersion,
     bool? prefetching,
     double? prefetchPct,
+    bool? stalled,
   }) =>
       TorrentState(
         phase: phase ?? this.phase,
@@ -161,6 +187,7 @@ class TorrentState {
         libraryVersion: libraryVersion ?? this.libraryVersion,
         prefetching: prefetching ?? this.prefetching,
         prefetchPct: prefetchPct ?? this.prefetchPct,
+        stalled: stalled ?? this.stalled,
       );
 
   String get displayMessage {
@@ -170,6 +197,9 @@ class TorrentState {
       case TorrentPhase.resolving:
         return 'Connecting to peers via DHT...';
       case TorrentPhase.buffering:
+        if (stalled) {
+          return 'This source has stopped loading • $peers peers';
+        }
         return peers == 0
             ? 'Finding peers...'
             : 'Buffering from $peers peers • ${downloadSpeedMbs.toStringAsFixed(1)} MB/s';
@@ -225,6 +255,20 @@ class TorrentEngine {
   int _preBufferTarget = 0;
   DateTime? _streamStartedAt;
 
+  // ── Smart pre-buffer (experimental setting, default OFF) ───────────────────
+  // ON: no fixed timer. Wait for a bigger head buffer (~1% of the file,
+  // 16-64 MiB) and only escape when the head STOPS GROWING for _stallAfter -
+  // then the user decides (keep waiting / play anyway / other source).
+  static const int _smartMinPreBufferBytes = 16 * 1024 * 1024;
+  static const int _smartMaxPreBufferBytes = 64 * 1024 * 1024;
+  static const Duration _stallAfter = Duration(seconds: 20);
+  bool _smartPreBuffer = false;
+  bool _forcePlay = false;
+  int _lastHead = 0;
+  DateTime _lastHeadAt = DateTime.now();
+
+  StreamFileHint? _fileHint;
+
   // ── Pause-prefetch ─────────────────────────────────────────────────────────
   /// Player must stay paused this long before the prefetch kicks in.
   static const Duration _pauseBeforePrefetch = Duration(seconds: 8);
@@ -256,8 +300,17 @@ class TorrentEngine {
   String? get streamUrl => _current.streamUrl;
 
   /// Start a new torrent session. Cancels any prior session first.
-  Future<void> start(String magnetLink) async {
+  Future<void> start(
+    String magnetLink, {
+    StreamFileHint? fileHint,
+    bool smartPreBuffer = false,
+  }) async {
     await stop();
+    _fileHint = fileHint;
+    _smartPreBuffer = smartPreBuffer;
+    _forcePlay = false;
+    _lastHead = 0;
+    _lastHeadAt = DateTime.now();
     _emit(const TorrentState(
       phase: TorrentPhase.resolving,
       libraryVersion: 'InTorrent (libtorrent 2.1.1)',
@@ -311,6 +364,8 @@ class TorrentEngine {
     _playing = false;
     _everPlayed = false;
     _gatePassed = false;
+    _forcePlay = false;
+    _fileHint = null;
     _fileIndex = -1;
     _fileSize = 0;
 
@@ -548,13 +603,33 @@ class TorrentEngine {
       } catch (_) {}
       if (_activeId != id) return;
 
-      final waited = DateTime.now()
-          .difference(_streamStartedAt ?? DateTime.now());
-      if (head >= _preBufferTarget || waited > _maxPreBufferWait) {
+      final nowT = DateTime.now();
+      final waited = nowT.difference(_streamStartedAt ?? nowT);
+      if (head > _lastHead) {
+        _lastHead = head;
+        _lastHeadAt = nowT;
+      }
+
+      final bool pass;
+      var stalled = false;
+      if (_smartPreBuffer) {
+        // No timer: wait for the full target while bytes keep arriving.
+        pass = _forcePlay || head >= _preBufferTarget;
+        stalled = !pass && nowT.difference(_lastHeadAt) > _stallAfter;
+      } else {
+        // Default: full target, or give up after _maxPreBufferWait.
+        pass = _forcePlay ||
+            head >= _preBufferTarget ||
+            waited > _maxPreBufferWait;
+      }
+
+      if (pass) {
         _gatePassed = true;
         debugPrint('[TorrentEngine] pre-buffer done: '
             '${(head / (1024 * 1024)).toStringAsFixed(1)} MiB '
-            'after ${waited.inSeconds}s');
+            'after ${waited.inSeconds}s'
+            '${_smartPreBuffer ? " (smart)" : ""}'
+            '${_forcePlay ? " (forced)" : ""}');
       } else {
         _emit(_current.copyWith(
           phase: TorrentPhase.buffering,
@@ -566,6 +641,7 @@ class TorrentEngine {
           numSeeds: status.numSeeds,
           nativeState: status.state.name,
           isPaused: status.isPaused,
+          stalled: stalled,
         ));
         return;
       }
@@ -604,13 +680,26 @@ class TorrentEngine {
       isPaused: status.isPaused,
       prefetching: _prefetching,
       prefetchPct: prefetchPct,
+      stalled: false,
     ));
+  }
+
+  /// Smart pre-buffer: the user chose to keep waiting after a stall.
+  void keepWaiting() {
+    _lastHeadAt = DateTime.now();
+    _emit(_current.copyWith(stalled: false));
+  }
+
+  /// Smart pre-buffer: start playing with whatever is buffered.
+  void playAnyway() {
+    _forcePlay = true;
+    _emit(_current.copyWith(stalled: false));
   }
 
   Future<void> _startStream(int id) async {
     try {
       final files = await intorrent.listFiles(id);
-      final fileIndex = _pickVideoFile(files);
+      final fileIndex = _pickVideoFile(files, _fileHint);
       debugPrint('[TorrentEngine] picked file index=$fileIndex '
           'from ${files.length} file(s): '
           '${files.map((f) => f.name).join(", ")}');
@@ -622,13 +711,19 @@ class TorrentEngine {
       for (final f in files) {
         if (f.index == fileIndex) _fileSize = f.size;
       }
-      _preBufferTarget = (_fileSize ~/ 200)
-          .clamp(_minPreBufferBytes, _maxPreBufferBytes)
-          .toInt();
+      _preBufferTarget = _smartPreBuffer
+          ? (_fileSize ~/ 100)
+              .clamp(_smartMinPreBufferBytes, _smartMaxPreBufferBytes)
+              .toInt()
+          : (_fileSize ~/ 200)
+              .clamp(_minPreBufferBytes, _maxPreBufferBytes)
+              .toInt();
       if (_fileSize > 0 && _preBufferTarget > _fileSize) {
         _preBufferTarget = _fileSize;
       }
       _gatePassed = false;
+      _lastHead = 0;
+      _lastHeadAt = DateTime.now();
       _streamStartedAt = DateTime.now();
       _streamStarted = true;
 
@@ -647,28 +742,102 @@ class TorrentEngine {
     }
   }
 
-  /// Picks which file inside a (possibly multi-file) torrent is the
-  /// actual video to stream. Torrents often bundle subtitles/NFO/poster
-  /// files alongside it, so the largest file overall is only used as a
-  /// fallback when nothing matches a known video extension.
-  int _pickVideoFile(List<intorrent.TorrentFile> files) {
-    intorrent.TorrentFile? bestVideo;
-    intorrent.TorrentFile? largestOverall;
-
-    for (final f in files) {
-      if (largestOverall == null || f.size > largestOverall.size) {
-        largestOverall = f;
+  /// Picks which file inside a (possibly multi-file) torrent to stream.
+  ///
+  /// Order of trust:
+  ///   1. the exact file name Torrentio gave us (packs / collections)
+  ///   2. for series: the file whose name carries the wanted SxxEyy
+  ///   3. Torrentio's fileIdx, if it points at a real video that isn't
+  ///      obviously a different episode or a tiny sample
+  ///   4. the largest video (single-movie torrents), else the largest file
+  ///
+  /// The old version only did (4), so a season pack always played whichever
+  /// episode happened to be the biggest file.
+  int _pickVideoFile(List<intorrent.TorrentFile> files, StreamFileHint? hint) {
+    final videos = files.where(_isVideoFile).toList();
+    if (videos.isEmpty) {
+      intorrent.TorrentFile? largest;
+      for (final f in files) {
+        if (largest == null || f.size > largest.size) largest = f;
       }
-      final dot = f.name.lastIndexOf('.');
-      final ext = dot >= 0 ? f.name.substring(dot).toLowerCase() : '';
-      if (_videoExtensions.contains(ext)) {
-        if (bestVideo == null || f.size > bestVideo.size) {
-          bestVideo = f;
-        }
+      return largest?.index ?? 0;
+    }
+
+    intorrent.TorrentFile largestVideo = videos.first;
+    for (final f in videos) {
+      if (f.size > largestVideo.size) largestVideo = f;
+    }
+
+    // 1. exact file name
+    final wantedName = _baseName(hint?.fileName);
+    if (wantedName != null) {
+      for (final f in videos) {
+        if (_baseName(f.name) == wantedName) return f.index;
       }
     }
 
-    return (bestVideo ?? largestOverall)?.index ?? 0;
+    // 2. season/episode in the file name
+    final season = hint?.season;
+    final episode = hint?.episode;
+    if (season != null && episode != null) {
+      final matches =
+          videos.where((f) => _nameHasEpisode(f.name, season, episode)).toList();
+      if (matches.length == 1) return matches.first.index;
+      if (matches.length > 1) {
+        for (final f in matches) {
+          if (f.index == hint?.fileIdx) return f.index;
+        }
+        matches.sort((x, y) => y.size.compareTo(x.size));
+        return matches.first.index;
+      }
+    }
+
+    // 3. Torrentio's index
+    final idx = hint?.fileIdx;
+    if (idx != null) {
+      for (final f in videos) {
+        if (f.index != idx) continue;
+        final tiny = f.size < largestVideo.size ~/ 10;
+        final otherEpisode = season != null &&
+            episode != null &&
+            _nameHasOtherEpisode(f.name, season, episode);
+        if (!tiny && !otherEpisode) return f.index;
+      }
+    }
+
+    // 4. largest video
+    return largestVideo.index;
+  }
+
+  bool _isVideoFile(intorrent.TorrentFile f) {
+    final dot = f.name.lastIndexOf('.');
+    final ext = dot >= 0 ? f.name.substring(dot).toLowerCase() : '';
+    return _videoExtensions.contains(ext);
+  }
+
+  /// Lower-cased file name without any folder part (or null if empty).
+  String? _baseName(String? path) {
+    if (path == null) return null;
+    final cut = path.lastIndexOf(RegExp(r'[\\/]'));
+    final name = (cut >= 0 ? path.substring(cut + 1) : path).trim().toLowerCase();
+    return name.isEmpty ? null : name;
+  }
+
+  bool _nameHasEpisode(String name, int season, int episode) {
+    final n = name.toLowerCase();
+    return RegExp('s0*$season[\\s._-]*e0*$episode(?!\\d)').hasMatch(n) ||
+        RegExp('(?:^|[^0-9])0*${season}x0*$episode(?!\\d)').hasMatch(n) ||
+        RegExp('season[\\s._-]*0*$season.*episode[\\s._-]*0*$episode(?!\\d)')
+            .hasMatch(n);
+  }
+
+  /// True if the name clearly names a DIFFERENT episode than the wanted one.
+  bool _nameHasOtherEpisode(String name, int season, int episode) {
+    final m = RegExp(r's(\d{1,2})[\s._-]*e(\d{1,3})').firstMatch(name.toLowerCase());
+    if (m == null) return false;
+    final s = int.tryParse(m.group(1)!);
+    final e = int.tryParse(m.group(2)!);
+    return s != season || e != episode;
   }
 
   void _emit(TorrentState state) {
