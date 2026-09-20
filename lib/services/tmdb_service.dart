@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../constants/app_constants.dart';
 import '../models/media_model.dart';
+import 'media_filter.dart';
 
 class TmdbService {
   static final _client = http.Client();
@@ -28,9 +29,10 @@ class TmdbService {
 
   static Future<List<MediaItem>> getTrending() async {
     final data = await _get('/trending/all/week', {'region': 'IN'});
-    return (data['results'] as List)
+    return MediaFilter.clean((data['results'] as List)
+        .where((j) => j['media_type'] == 'movie' || j['media_type'] == 'tv')
         .map((j) => MediaItem.fromJson(j))
-        .toList();
+        .toList());
   }
 
   static Future<List<MediaItem>> getHindiMovies({int page = 1}) async {
@@ -39,9 +41,9 @@ class TmdbService {
       'sort_by': 'popularity.desc',
       'page': '$page',
     });
-    return (data['results'] as List)
+    return MediaFilter.clean((data['results'] as List)
         .map((j) => MediaItem.fromJson(j, type: 'movie'))
-        .toList();
+        .toList());
   }
 
   static Future<List<MediaItem>> getHindiShows({int page = 1}) async {
@@ -50,9 +52,9 @@ class TmdbService {
       'sort_by': 'popularity.desc',
       'page': '$page',
     });
-    return (data['results'] as List)
+    return MediaFilter.clean((data['results'] as List)
         .map((j) => MediaItem.fromJson(j, type: 'tv'))
-        .toList();
+        .toList());
   }
 
   static Future<List<MediaItem>> getNewBollywood() async {
@@ -61,9 +63,9 @@ class TmdbService {
       'sort_by': 'release_date.desc',
       'primary_release_year': '2025',
     });
-    return (data['results'] as List)
+    return MediaFilter.clean((data['results'] as List)
         .map((j) => MediaItem.fromJson(j, type: 'movie'))
-        .toList();
+        .toList());
   }
 
   static Future<List<MediaItem>> getSouthDubbed() async {
@@ -71,9 +73,9 @@ class TmdbService {
       'with_original_language': 'te,ta,ml,kn',
       'sort_by': 'popularity.desc',
     });
-    return (data['results'] as List)
+    return MediaFilter.clean((data['results'] as List)
         .map((j) => MediaItem.fromJson(j, type: 'movie'))
-        .toList();
+        .toList());
   }
 
   static Future<List<MediaItem>> getHindiDubbedHollywood() async {
@@ -83,9 +85,9 @@ class TmdbService {
       'region': 'IN',
       'vote_count.gte': '500',
     });
-    return (data['results'] as List)
+    return MediaFilter.clean((data['results'] as List)
         .map((j) => MediaItem.fromJson(j, type: 'movie'))
-        .toList();
+        .toList());
   }
 
   static Future<List<MediaItem>> getHindiDubbedAnimated() async {
@@ -94,17 +96,17 @@ class TmdbService {
       'sort_by': 'popularity.desc',
       'vote_count.gte': '200',
     });
-    return (data['results'] as List)
+    return MediaFilter.clean((data['results'] as List)
         .map((j) => MediaItem.fromJson(j, type: 'movie'))
-        .toList();
+        .toList());
   }
 
   static Future<List<MediaItem>> search(String query) async {
     final data = await _get('/search/multi', {'query': query});
-    return (data['results'] as List)
+    return MediaFilter.clean((data['results'] as List)
         .where((j) => ['movie', 'tv'].contains(j['media_type']))
         .map((j) => MediaItem.fromJson(j))
-        .toList();
+        .toList());
   }
 
   static Future<MediaDetails> getDetails(int id, String type) async {
