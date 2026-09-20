@@ -333,6 +333,33 @@ class TorrentEngine {
   /// Stub — kept for API compatibility.
   void onPlaybackProgress(Duration position, Duration duration) {}
 
+  /// For the player's seek bar: how far (0.0-1.0, counted in bytes, so it is
+  /// an approximation for variable-bitrate files) the file is downloaded
+  /// CONTIGUOUSLY from the byte where [position] roughly lies. Never less
+  /// than the playhead itself; 0 if nothing is known yet.
+  Future<double> downloadedUpTo(Duration position, Duration duration) async {
+    final id = _activeId;
+    if (id == null ||
+        !_streamStarted ||
+        _fileIndex < 0 ||
+        _fileSize <= 0 ||
+        duration.inMilliseconds <= 0) {
+      return 0.0;
+    }
+    final startByte =
+        ((position.inMilliseconds / duration.inMilliseconds) * _fileSize)
+            .floor()
+            .clamp(0, _fileSize - 1)
+            .toInt();
+    try {
+      final got = await intorrent.availableBytes(
+          id, _fileIndex, startByte, _fileSize - startByte);
+      return ((startByte + got) / _fileSize).clamp(0.0, 1.0).toDouble();
+    } catch (_) {
+      return 0.0;
+    }
+  }
+
   // ── Pause-prefetch API (called from torrent_player_screen.dart) ────────────
 
   /// Tell the engine whether the player is currently playing.
