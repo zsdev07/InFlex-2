@@ -1,6 +1,9 @@
 // ── Media Models ─────────────────────────────────────────────────────────────
 // No changes to MediaItem, MediaDetails, Genre, CastMember, Season, Episode.
-// TorrentStream gains an optional magnetLink field used by DebridResolverScreen.
+// TorrentStream gains an optional magnetLink field used by DebridResolverScreen,
+// plus fileName / provider / info (parsed release details) for the source picker.
+
+import '../services/release_parser.dart';
 
 class MediaItem {
   final int id;
@@ -197,19 +200,34 @@ class Episode {
 // StreamService sets this automatically; you never need to construct it manually.
 
 class TorrentStream {
+  /// Release name as Torrentio prints it (first line of its `title`), e.g.
+  /// "Jawan.2023.Hindi.1080p.WEB-DL.DDP5.1". For embed sources: the site name.
   final String title;
   final String infoHash;
   final int? fileIdx;
   final String quality;
   final String? size;
+
+  /// [size] in bytes, when it could be read (used for sorting).
+  final int? sizeBytes;
   final int? seeds;
   final String streamUrl;
   final String source;
   final bool isEmbed;
 
-  /// Full magnet URI — populated by StreamService for non-embed sources.
+  /// Full magnet URI -- populated by StreamService for non-embed sources.
   /// null for embed/WebView sources where infoHash is empty.
   final String? magnetLink;
+
+  /// The exact file inside the torrent this stream refers to. Only set for
+  /// packs (season packs / collections), where the torrent holds many videos.
+  final String? fileName;
+
+  /// Indexer that found the torrent (1337x, TorrentGalaxy, YTS ...).
+  final String? provider;
+
+  /// Parsed resolution / codec / HDR / audio / languages of the release.
+  final ReleaseInfo info;
 
   TorrentStream({
     required this.title,
@@ -217,10 +235,14 @@ class TorrentStream {
     this.fileIdx,
     required this.quality,
     this.size,
+    this.sizeBytes,
     this.seeds,
     required this.streamUrl,
     this.source = 'Unknown',
     this.isEmbed = false,
     this.magnetLink,
+    this.fileName,
+    this.provider,
+    this.info = ReleaseInfo.empty,
   });
 }
