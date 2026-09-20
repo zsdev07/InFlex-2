@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../models/media_model.dart';
+import 'release_parser.dart';
 
 /// ── StreamService ─────────────────────────────────────────────────────────
 ///
@@ -46,12 +47,17 @@ class StreamService {
     required String type,
     int? season,
     int? episode,
+    String? movieTitle,
   }) async {
     final List<TorrentStream> all = [];
 
     final results = await Future.wait([
       _getTorrentioStreams(
-          imdbId: imdbId, type: type, season: season, episode: episode),
+          imdbId: imdbId,
+          type: type,
+          season: season,
+          episode: episode,
+          movieTitle: movieTitle),
       _getEmbedStreams(
           tmdbId: tmdbId,
           imdbId: imdbId,
@@ -82,6 +88,7 @@ class StreamService {
     required String type,
     int? season,
     int? episode,
+    String? movieTitle,
   }) async {
     try {
       final stremioType = type == 'tv' ? 'series' : 'movie';
@@ -120,36 +127,84 @@ class StreamService {
         if (s['infoHash'] == null) continue;
 
         final infoHash = s['infoHash'] as String;
-        final fileIdx = s['fileIdx'] as int? ?? 0;
+        // fileIdx is the video's index inside the torrent. When Torrentio
+        // omits it the largest file is meant - keep that as null instead of
+        // pretending it is file 0.
+        final fileIdx = (s['fileIdx'] as num?)?.toInt();
         final name = s['name'] as String? ?? '';
         final titleStr = s['title'] as String? ?? '';
 
+        // Torrentio layout:
+        //   name  = "Torrentio\n1080p"                     (addon + quality)
+        //   title = "<release name>\n"
+        //           "[<file name inside the pack>\n]"       (packs only)
+        //           "👤 <seeds> 💾 <size> ⚙️ <indexer>\n"
+        //           "<language flags>"
+        // The old code used the FIRST LINE OF `name`, i.e. the literal word
+        // "Torrentio", as every source's title.
+        final lines = titleStr
+            .split('\n')
+            .map((l) => l.trim())
+            .where((l) => l.isNotEmpty)
+            .toList();
+        final statIdx =
+            lines.indexWhere((l) => l.contains('👤') || l.contains('💾'));
+        final statLine = statIdx >= 0 ? lines[statIdx] : titleStr;
+        final releaseTitle =
+            lines.isNotEmpty ? lines.first : name.split('\n').first.trim();
+        final fileLine = statIdx > 1 ? lines[1] : null;
+        final languageLine = (statIdx >= 0 && statIdx + 1 < lines.length)
+            ? lines.sublist(statIdx + 1).join(' ')
+            : '';
+
+        String? hintFile;
+        final hints = s['behaviorHints'];
+        if (hints is Map) {
+          final f = hints['filename'];
+          if (f is String && f.trim().isNotEmpty) hintFile = f.trim();
+        }
+        final fileName = hintFile ?? fileLine;
+
         final quality = _detectQuality(name);
 
-        final sizeMatch = RegExp(r'💾\s*([\d.,]+\s*\w+)').firstMatch(titleStr);
+        final sizeMatch =
+            RegExp(r'💾\s*([\d.,]+\s*\w+)').firstMatch(statLine);
         final size = sizeMatch?.group(1);
 
-        final seedMatch = RegExp(r'👤\s*(\d+)').firstMatch(titleStr);
+        final seedMatch = RegExp(r'👤\s*(\d+)').firstMatch(statLine);
         final seeds =
             seedMatch != null ? int.tryParse(seedMatch.group(1)!) : null;
 
-        // Build magnet URI — used by DebridResolverScreen
-        final magnet = _buildMagnet(infoHash,
-            title: name.split('\n').first.trim());
+        final provider =
+            RegExp(r'\u2699\uFE0F?\s*(.+)$').firstMatch(statLine)?.group(1)?.trim();
+
+        final info = ReleaseInfo.parse(
+          releaseTitle: releaseTitle,
+          fileName: fileName,
+          languageLine: languageLine,
+          movieTitle: movieTitle,
+        );
+
+        // Build magnet URI — used by DebridResolverScreen and the P2P engine
+        final magnet = _buildMagnet(infoHash, title: releaseTitle);
 
         result.add(TorrentStream(
-          title: name.split('\n').first.trim(),
+          title: releaseTitle,
           infoHash: infoHash,
           fileIdx: fileIdx,
           quality: quality,
           size: size,
+          sizeBytes: parseSizeToBytes(size),
           seeds: seeds,
           // streamUrl kept for reference; actual play goes via Telegram
           streamUrl:
-              'https://torrentio.strem.fun/$infoHash/$fileIdx/download.mp4',
+              'https://torrentio.strem.fun/$infoHash/${fileIdx ?? 0}/download.mp4',
           source: 'Torrentio',
           isEmbed: false,
           magnetLink: magnet,
+          fileName: fileName,
+          provider: provider,
+          info: info,
         ));
       }
       return result;
