@@ -6,7 +6,7 @@ import '../widgets/hero_banner.dart';
 import '../widgets/media_row.dart';
 import '../widgets/search_bar_widget.dart';
 import 'detail_screen.dart';
-import 'watchlist_screen.dart';
+import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -202,6 +202,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildMainContent(TmdbProvider provider) {
+    // Settings tab (the watchlist now lives inside Settings > Library).
+    if (_tab == 3) return const SettingsScreen();
+
     if (provider.loading) {
       return const Center(
         child: CircularProgressIndicator(
@@ -210,8 +213,6 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       );
     }
-
-    if (_tab == 3) return const WatchlistScreen();
 
     // Show error + retry if everything failed to load
     if (provider.error != null && provider.trending.isEmpty && provider.hindiMovies.isEmpty) {
@@ -348,7 +349,7 @@ class _HomeScreenState extends State<HomeScreen> {
       (Icons.home_rounded, 'Home'),
       (Icons.movie_rounded, 'Movies'),
       (Icons.tv_rounded, 'Shows'),
-      (Icons.bookmark_rounded, 'Watchlist'),
+      (Icons.settings_rounded, 'Settings'),
     ];
     return Container(
       decoration: BoxDecoration(
