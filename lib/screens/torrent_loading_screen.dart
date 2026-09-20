@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../services/app_settings.dart';
 import '../services/torrent_engine.dart';
 import 'torrent_player_screen.dart';
 
@@ -27,12 +28,16 @@ class TorrentLoadingScreen extends StatefulWidget {
   final String quality;
   final String? debugNote; // optional custom note shown in debug card
 
+  /// Which file inside the torrent to play (season packs, collections).
+  final StreamFileHint? fileHint;
+
   const TorrentLoadingScreen({
     super.key,
     required this.magnetLink,
     required this.movieTitle,
     required this.quality,
     this.debugNote,
+    this.fileHint,
   });
 
   @override
@@ -60,7 +65,11 @@ class _TorrentLoadingScreenState extends State<TorrentLoadingScreen>
     )..repeat(reverse: true);
 
     _sub = _engine.stateStream.listen(_onState);
-    _engine.start(widget.magnetLink);
+    _engine.start(
+      widget.magnetLink,
+      fileHint: widget.fileHint,
+      smartPreBuffer: AppSettings.smartPreBuffer,
+    );
   }
 
   @override
@@ -113,7 +122,11 @@ class _TorrentLoadingScreenState extends State<TorrentLoadingScreen>
       _state = const TorrentState(phase: TorrentPhase.idle);
       _navigating = false;
     });
-    await _engine.start(widget.magnetLink);
+    await _engine.start(
+      widget.magnetLink,
+      fileHint: widget.fileHint,
+      smartPreBuffer: AppSettings.smartPreBuffer,
+    );
   }
 
   @override
@@ -227,6 +240,16 @@ class _TorrentLoadingScreenState extends State<TorrentLoadingScreen>
               const SizedBox(height: 24),
 
               // ── Error card ─────────────────────────────────────────────
+              // Stalled card (experimental smart pre-buffer only)
+              if (_state.stalled && _state.phase == TorrentPhase.buffering)
+                _StalledCard(
+                  peers: _state.peers,
+                  seeds: _state.numSeeds,
+                  onKeepWaiting: _engine.keepWaiting,
+                  onPlayAnyway: _engine.playAnyway,
+                  onOtherSource: _onBack,
+                ),
+
               if (_state.phase == TorrentPhase.error)
                 _ErrorCard(
                   message: _state.errorMessage,
@@ -643,6 +666,97 @@ class _DebugRow extends StatelessWidget {
                     size: 13, color: Colors.white38),
               ),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Shown by the experimental "Smart pre-buffer" when the start of the movie
+/// has stopped growing: the user picks what happens next instead of a timer.
+class _StalledCard extends StatelessWidget {
+  final int peers;
+  final int seeds;
+  final VoidCallback onKeepWaiting;
+  final VoidCallback onPlayAnyway;
+  final VoidCallback onOtherSource;
+
+  const _StalledCard({
+    required this.peers,
+    required this.seeds,
+    required this.onKeepWaiting,
+    required this.onPlayAnyway,
+    required this.onOtherSource,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 24),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFF9500).withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(14),
+        border:
+            Border.all(color: const Color(0xFFFF9500).withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.hourglass_bottom_rounded,
+                  color: Color(0xFFFF9500), size: 18),
+              SizedBox(width: 8),
+              Text('This source stopped loading',
+                  style: TextStyle(
+                      color: Color(0xFFFF9500),
+                      fontSize: 13,
+                      fontWeight: FontWeight.w800)),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Connected to $peers peers ($seeds seeds), but nothing new has '
+            'arrived for a while. It may be a weak source.',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.white54, fontSize: 12),
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: onOtherSource,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFFFCC00),
+                foregroundColor: Colors.black,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+              ),
+              child: const Text('Choose another source',
+                  style: TextStyle(fontWeight: FontWeight.w800)),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Expanded(
+                child: TextButton(
+                  onPressed: onKeepWaiting,
+                  child: const Text('Keep waiting',
+                      style: TextStyle(color: Colors.white70)),
+                ),
+              ),
+              Expanded(
+                child: TextButton(
+                  onPressed: onPlayAnyway,
+                  child: const Text('Play anyway',
+                      style: TextStyle(color: Colors.white70)),
+                ),
+              ),
+            ],
+          ),
         ],
       ),
     );
