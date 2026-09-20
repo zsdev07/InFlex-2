@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:provider/provider.dart';
+import '../providers/tmdb_provider.dart';
 import '../services/app_settings.dart';
 import 'watchlist_screen.dart';
 
@@ -32,6 +34,9 @@ class SettingsScreen extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 24),
+        const _SectionTitle('CONTENT'),
+        const _HideIncompleteTile(),
+        const SizedBox(height: 24),
         const _SectionTitle('PLAYBACK  ·  EXPERIMENTAL'),
         const _SmartPreBufferTile(),
         const SizedBox(height: 20),
@@ -63,6 +68,50 @@ class _WatchlistPage extends StatelessWidget {
             style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
       ),
       body: const WatchlistScreen(),
+    );
+  }
+}
+
+// ── Hide incomplete titles ────────────────────────────────────────────────────
+
+class _HideIncompleteTile extends StatelessWidget {
+  const _HideIncompleteTile();
+
+  static const String _title = 'Hide incomplete titles';
+  static const String _description =
+      'Hides TMDB entries that have no poster, no release date or a 0.0 '
+      'rating - usually broken or fake listings that cannot be played. '
+      'Brand-new releases that have a poster and synopsis are still shown.';
+
+  @override
+  Widget build(BuildContext context) {
+    if (!Hive.isBoxOpen(AppSettings.boxName)) {
+      return const _SwitchTile(
+        icon: Icons.filter_alt_rounded,
+        title: _title,
+        description: _description,
+        value: true,
+        experimental: false,
+        onChanged: null,
+      );
+    }
+    return ValueListenableBuilder<Box<dynamic>>(
+      valueListenable: Hive.box<dynamic>(AppSettings.boxName)
+          .listenable(keys: [AppSettings.keyHideIncompleteTitles]),
+      builder: (context, box, _) => _SwitchTile(
+        icon: Icons.filter_alt_rounded,
+        title: _title,
+        description: _description,
+        value: AppSettings.hideIncompleteTitles,
+        experimental: false,
+        onChanged: (v) async {
+          final home = context.read<TmdbProvider>();
+          await AppSettings.setHideIncompleteTitles(v);
+          // Reload the home rows so the change is visible straight away
+          // (searches pick it up on the next search).
+          home.loadHome();
+        },
+      ),
     );
   }
 }
@@ -185,6 +234,7 @@ class _SwitchTile extends StatelessWidget {
   final String description;
   final bool value;
   final ValueChanged<bool>? onChanged;
+  final bool experimental;
 
   const _SwitchTile({
     required this.icon,
@@ -192,6 +242,7 @@ class _SwitchTile extends StatelessWidget {
     required this.description,
     required this.value,
     required this.onChanged,
+    this.experimental = true,
   });
 
   @override
@@ -225,21 +276,23 @@ class _SwitchTile extends StatelessWidget {
                               fontSize: 14,
                               fontWeight: FontWeight.w700)),
                     ),
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: _accent.withValues(alpha: 0.14),
-                        borderRadius: BorderRadius.circular(4),
+                    if (experimental) ...[
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: _accent.withValues(alpha: 0.14),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: const Text('EXPERIMENTAL',
+                            style: TextStyle(
+                                color: _accent,
+                                fontSize: 8,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 0.6)),
                       ),
-                      child: const Text('EXPERIMENTAL',
-                          style: TextStyle(
-                              color: _accent,
-                              fontSize: 8,
-                              fontWeight: FontWeight.w800,
-                              letterSpacing: 0.6)),
-                    ),
+                    ],
                   ],
                 ),
                 const SizedBox(height: 6),
