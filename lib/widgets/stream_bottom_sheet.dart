@@ -4,6 +4,7 @@ import '../models/media_model.dart';
 import '../services/release_parser.dart';
 import '../services/tmdb_service.dart';
 import '../services/stream_service.dart';
+import '../services/subtitle_service.dart';
 import '../services/supabase_cache_repo.dart';
 import '../services/torrent_engine.dart' show StreamFileHint;
 import '../screens/player_screen.dart';
@@ -398,6 +399,18 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
       episode: _isTv ? widget.episode : null,
     );
 
+    // English subtitles are looked up online by IMDB id (+ season/episode).
+    final imdb = _imdbId;
+    final subtitleQuery = (imdb == null || imdb.isEmpty)
+        ? null
+        : SubtitleQuery(
+            imdbId: imdb,
+            type: _isTv ? 'series' : 'movie',
+            season: _isTv ? widget.season : null,
+            episode: _isTv ? widget.episode : null,
+            fileName: stream.fileName,
+          );
+
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -406,6 +419,7 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
           movieTitle: _playbackTitle,
           quality: stream.quality,
           fileHint: hint,
+          subtitleQuery: subtitleQuery,
         ),
       ),
     );
