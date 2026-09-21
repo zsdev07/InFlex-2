@@ -15,10 +15,13 @@ import 'package:http/http.dart' as http;
 //   movie : GET /subtitles/movie/tt1234567.json
 //   series: GET /subtitles/series/tt1234567:SEASON:EPISODE.json
 //
-// The optional "extra" path segment lets the addon rank subtitles that match
-// the actual release, and we pass what we know:
+// The optional "extra" path segment lets the addon find the subtitles that
+// match the actual file, and we pass what we know:
 //
-//   GET /subtitles/movie/tt1234567/filename=<file name>&videoSize=<bytes>.json
+//   GET /subtitles/movie/tt1234567/videoHash=<hash>&videoSize=<bytes>&filename=<name>.json
+//
+// `videoHash` is the OpenSubtitles hash of the file (see subtitle_hash.dart) -
+// the only way to get the subtitle made for THIS exact release.
 //
 // Response: {"subtitles":[{"id":"…","url":"https://…srt","lang":"eng"}, …]}.
 // We keep only English and only the first few entries (the addon's own
@@ -40,6 +43,9 @@ class SubtitleQuery {
   final String? fileName;
   final int? videoSize;
 
+  /// OpenSubtitles hash of the file (16 hex digits), when we could compute it.
+  final String? videoHash;
+
   const SubtitleQuery({
     required this.imdbId,
     required this.type,
@@ -47,6 +53,7 @@ class SubtitleQuery {
     this.episode,
     this.fileName,
     this.videoSize,
+    this.videoHash,
   });
 
   SubtitleQuery withFile({String? fileName, int? videoSize}) => SubtitleQuery(
@@ -56,6 +63,17 @@ class SubtitleQuery {
         episode: episode,
         fileName: fileName ?? this.fileName,
         videoSize: videoSize ?? this.videoSize,
+        videoHash: videoHash,
+      );
+
+  SubtitleQuery withHash(String hash) => SubtitleQuery(
+        imdbId: imdbId,
+        type: type,
+        season: season,
+        episode: episode,
+        fileName: fileName,
+        videoSize: videoSize,
+        videoHash: hash,
       );
 
   /// Stremio video id: `tt…` for movies, `tt…:season:episode` for episodes.
@@ -91,6 +109,8 @@ class SubtitleService {
     int max = 3,
   }) async {
     final extras = <String>[];
+    final hash = query.videoHash?.trim();
+    if (hash != null && hash.isNotEmpty) extras.add('videoHash=$hash');
     final name = query.fileName?.trim();
     if (name != null && name.isNotEmpty) {
       extras.add('filename=${Uri.encodeComponent(name)}');
