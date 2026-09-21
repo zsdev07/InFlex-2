@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../services/subtitle_hash.dart';
 import '../services/subtitle_service.dart';
 import '../services/torrent_engine.dart';
 
@@ -465,24 +466,52 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
   bool _isOnlineTrack(SubtitleTrack t) =>
       (t.title ?? '').startsWith(_onlineTitlePrefix);
 
-  /// Asks the subtitle service for English subtitles matching this video. Runs
-  /// once when the player opens (one small request) and again on "try again".
+  // Bumped on every (re)load so a slow, outdated request can't overwrite a newer one.
+  int _subtitleGen = 0;
+
+  /// Looks up English subtitles for this video.
+  ///   1. quick lookup by IMDB id + file name + size (shows results fast)
+  ///   2. in the background: compute the file's OpenSubtitles hash and look
+  ///      up again - if that finds anything (and no online subtitle has been
+  ///      picked yet) it replaces the list with subtitles made for THIS file.
   Future<void> _loadOnlineSubtitles() async {
     final query = widget.subtitleQuery;
     if (query == null) return;
+    final gen = ++_subtitleGen;
     _online.value = const _OnlineSubs(_OnlineStatus.loading);
+
+    final base = query.withFile(
+      fileName: widget.engine.streamFileName,
+      videoSize: widget.engine.streamFileSize,
+    );
+
     try {
-      final withFile = query.withFile(
-        fileName: widget.engine.streamFileName,
-        videoSize: widget.engine.streamFileSize,
-      );
-      final subs = await SubtitleService.fetchEnglish(withFile);
-      if (!mounted) return;
+      final subs = await SubtitleService.fetchEnglish(base);
+      if (!mounted || gen != _subtitleGen) return;
       _online.value = _OnlineSubs(_OnlineStatus.ready, subs);
     } catch (e) {
       debugPrint('[TorrentPlayerScreen] online subtitles failed: $e');
-      if (!mounted) return;
+      if (!mounted || gen != _subtitleGen) return;
       _online.value = const _OnlineSubs(_OnlineStatus.error);
+      return;
+    }
+
+    _upgradeWithHash(base, gen);
+  }
+
+  Future<void> _upgradeWithHash(SubtitleQuery base, int gen) async {
+    final hash =
+        await SubtitleHasher.hashFromStream(widget.streamUrl, base.videoSize);
+    if (hash == null || !mounted || gen != _subtitleGen) return;
+    try {
+      final subs = await SubtitleService.fetchEnglish(base.withHash(hash));
+      if (!mounted || gen != _subtitleGen) return;
+      if (subs.isEmpty) return;
+      // Don't reshuffle the list under someone who already picked one.
+      if (_activeOnline != null) return;
+      _online.value = _OnlineSubs(_OnlineStatus.ready, subs, true);
+    } catch (e) {
+      debugPrint('[TorrentPlayerScreen] hash lookup failed: $e');
     }
   }
 
@@ -499,7 +528,8 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
 
   /// mpv `sub-delay`: positive = subtitles appear LATER, negative = earlier.
   Future<void> _setSubDelay(double seconds) async {
-    final rounded = (seconds * 10).round() / 10; // 0.1 s steps, no float drift
+    final rounded =
+        ((seconds.clamp(-300.0, 300.0)) * 10).round() / 10; // 0.1 s steps
     final platform = _player.platform;
     if (platform is NativePlayer) {
       await platform.setProperty('sub-delay', rounded.toStringAsFixed(1));
@@ -713,7 +743,9 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
                                     _SheetRow(
                                       label: 'English · Option ${i + 1}',
                                       sublabel: i == 0
-                                          ? 'Best match - if the timing is off, try another option or use Timing below'
+                                          ? (online.hashed
+                                              ? 'Best match - found using your exact file'
+                                              : 'Best match - if the timing is off, try another option or use Timing below')
                                           : null,
                                       selected:
                                           currentIsOnline && _activeOnline == i,
@@ -772,37 +804,24 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
                           ],
                         ),
                       ),
-                      const _SheetLabel('Timing  (Later = subtitles appear later)'),
+                      const _SheetLabel('Timing  (+ = subtitles appear later)'),
                       Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                        child: Row(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+                        child: Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
                           children: [
-                            _OptionChip(
-                              label: 'Earlier',
-                              selected: false,
-                              onTap: () async {
-                                await _setSubDelay(_subDelay - 0.5);
-                                setSheet(() {});
-                              },
-                            ),
-                            const SizedBox(width: 8),
-                            _OptionChip(
-                              label: 'Later',
-                              selected: false,
-                              onTap: () async {
-                                await _setSubDelay(_subDelay + 0.5);
-                                setSheet(() {});
-                              },
-                            ),
-                            const SizedBox(width: 12),
-                            Text(
-                              _delayLabel(_subDelay),
-                              style: const TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600),
-                            ),
-                            const Spacer(),
+                            for (final step in const [-5.0, -0.5, 0.5, 5.0])
+                              _OptionChip(
+                                label: step > 0
+                                    ? '+${step.toString().replaceAll('.0', '')} s'
+                                    : '${step.toString().replaceAll('.0', '')} s',
+                                selected: false,
+                                onTap: () async {
+                                  await _setSubDelay(_subDelay + step);
+                                  setSheet(() {});
+                                },
+                              ),
                             if (_subDelay != 0)
                               _OptionChip(
                                 label: 'Reset',
@@ -813,6 +832,16 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
                                 },
                               ),
                           ],
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                        child: Text(
+                          _delayLabel(_subDelay),
+                          style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600),
                         ),
                       ),
                     ],
@@ -1134,8 +1163,13 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
             top: false,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(20, 0, 12, 6),
+              // stretch: a Column centres its children with LOOSE width by
+              // default, which collapsed the seek bar to zero width (only its
+              // thumb showed, in the middle of the screen, and it could not
+              // be dragged).
               child: Column(
                 mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   Padding(
                     padding: const EdgeInsets.only(right: 8),
@@ -1426,7 +1460,10 @@ enum _OnlineStatus { idle, loading, ready, error }
 class _OnlineSubs {
   final _OnlineStatus status;
   final List<OnlineSubtitle> subs;
-  const _OnlineSubs(this.status, [this.subs = const []]);
+
+  /// The list was fetched using the file's OpenSubtitles hash.
+  final bool hashed;
+  const _OnlineSubs(this.status, [this.subs = const [], this.hashed = false]);
 }
 
 class _HudInfo {
@@ -1542,6 +1579,7 @@ class _SeekBar extends StatelessWidget {
             width <= 0 ? 0.0 : (dx / width).clamp(0.0, 1.0).toDouble();
 
         return SizedBox(
+          width: double.infinity,
           height: 44,
           child: Stack(
             clipBehavior: Clip.none,
