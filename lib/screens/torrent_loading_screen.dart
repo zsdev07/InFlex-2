@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/app_settings.dart';
+import '../services/subtitle_service.dart';
 import '../services/torrent_engine.dart';
 import 'torrent_player_screen.dart';
 
@@ -31,6 +32,9 @@ class TorrentLoadingScreen extends StatefulWidget {
   /// Which file inside the torrent to play (season packs, collections).
   final StreamFileHint? fileHint;
 
+  /// Lets the player look up English subtitles online (null = no lookup).
+  final SubtitleQuery? subtitleQuery;
+
   const TorrentLoadingScreen({
     super.key,
     required this.magnetLink,
@@ -38,6 +42,7 @@ class TorrentLoadingScreen extends StatefulWidget {
     required this.quality,
     this.debugNote,
     this.fileHint,
+    this.subtitleQuery,
   });
 
   @override
@@ -100,6 +105,7 @@ class _TorrentLoadingScreenState extends State<TorrentLoadingScreen>
               title: widget.movieTitle,
               quality: widget.quality,
               engine: _engine,
+              subtitleQuery: widget.subtitleQuery,
             ),
             transitionsBuilder: (_, animation, __, child) => FadeTransition(
               opacity: animation,
