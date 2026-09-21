@@ -1,10 +1,11 @@
 import 'dart:async';
-import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:flutter/foundation.dart' show ValueListenable, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../services/subtitle_service.dart';
 import '../services/torrent_engine.dart';
 
 // ── TorrentPlayerScreen ───────────────────────────────────────────────────────
@@ -49,12 +50,16 @@ class TorrentPlayerScreen extends StatefulWidget {
   final String quality;
   final TorrentEngine engine;
 
+  /// Lets the player look up English subtitles online (null = no lookup).
+  final SubtitleQuery? subtitleQuery;
+
   const TorrentPlayerScreen({
     super.key,
     required this.streamUrl,
     required this.title,
     required this.quality,
     required this.engine,
+    this.subtitleQuery,
   });
 
   @override
@@ -75,6 +80,12 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
   final ValueNotifier<TorrentState> _engineState = ValueNotifier<TorrentState>(
       const TorrentState(phase: TorrentPhase.streaming));
   final ValueNotifier<_HudInfo?> _hud = ValueNotifier<_HudInfo?>(null);
+
+  // Online (English) subtitles - see _loadOnlineSubtitles().
+  final ValueNotifier<_OnlineSubs> _online =
+      ValueNotifier<_OnlineSubs>(const _OnlineSubs(_OnlineStatus.idle));
+  int? _activeOnline; // which online option is loaded (null = none)
+  double _subDelay = 0.0; // seconds; positive = subtitles appear later
 
   // Player state that changes rarely -> plain setState is fine.
   bool _playing = false;
@@ -220,6 +231,7 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
         const Duration(seconds: 1), (_) => _refreshDownloaded());
 
     _initAndOpen();
+    _loadOnlineSubtitles();
   }
 
   Future<void> _initAndOpen() async {
@@ -275,6 +287,7 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
     _dragValue.dispose();
     _engineState.dispose();
     _hud.dispose();
+    _online.dispose();
 
     _player.dispose();
     widget.engine.stop(); // stop torrent + clean temp files
@@ -443,6 +456,60 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
 
   // ── Menus ──────────────────────────────────────────────────────────────────
 
+  // ── Online English subtitles ───────────────────────────────────────────────
+
+  /// Title given to online tracks, so they can be told apart from the file's
+  /// own (embedded) tracks in the track list.
+  static const String _onlineTitlePrefix = 'English (online';
+
+  bool _isOnlineTrack(SubtitleTrack t) =>
+      (t.title ?? '').startsWith(_onlineTitlePrefix);
+
+  /// Asks the subtitle service for English subtitles matching this video. Runs
+  /// once when the player opens (one small request) and again on "try again".
+  Future<void> _loadOnlineSubtitles() async {
+    final query = widget.subtitleQuery;
+    if (query == null) return;
+    _online.value = const _OnlineSubs(_OnlineStatus.loading);
+    try {
+      final withFile = query.withFile(
+        fileName: widget.engine.streamFileName,
+        videoSize: widget.engine.streamFileSize,
+      );
+      final subs = await SubtitleService.fetchEnglish(withFile);
+      if (!mounted) return;
+      _online.value = _OnlineSubs(_OnlineStatus.ready, subs);
+    } catch (e) {
+      debugPrint('[TorrentPlayerScreen] online subtitles failed: $e');
+      if (!mounted) return;
+      _online.value = const _OnlineSubs(_OnlineStatus.error);
+    }
+  }
+
+  Future<void> _useOnlineSubtitle(int index) async {
+    final subs = _online.value.subs;
+    if (index < 0 || index >= subs.length) return;
+    await _player.setSubtitleTrack(SubtitleTrack.uri(
+      subs[index].url,
+      title: '$_onlineTitlePrefix ${index + 1})',
+      language: 'eng',
+    ));
+    if (mounted) setState(() => _activeOnline = index);
+  }
+
+  /// mpv `sub-delay`: positive = subtitles appear LATER, negative = earlier.
+  Future<void> _setSubDelay(double seconds) async {
+    final rounded = (seconds * 10).round() / 10; // 0.1 s steps, no float drift
+    final platform = _player.platform;
+    if (platform is NativePlayer) {
+      await platform.setProperty('sub-delay', rounded.toStringAsFixed(1));
+    }
+    if (mounted) setState(() => _subDelay = rounded);
+  }
+
+  String _delayLabel(double v) =>
+      v == 0 ? 'In sync' : '${v > 0 ? '+' : ''}${v.toStringAsFixed(1)} s';
+
   Future<void> _openSheet(WidgetBuilder builder) async {
     setState(() => _menusOpen++);
     await showModalBottomSheet<void>(
@@ -577,7 +644,8 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
                   final selected =
                       (trackSnap.data ?? _player.state.track).subtitle;
                   final subs = tracks.subtitle
-                      .where((t) => t.id != 'auto' && t.id != 'no')
+                      .where((t) =>
+                          t.id != 'auto' && t.id != 'no' && !_isOnlineTrack(t))
                       .toList();
                   return _SheetScaffold(
                     title: 'Subtitles',
@@ -587,6 +655,7 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
                         selected: selected.id == 'no',
                         onTap: () {
                           _player.setSubtitleTrack(SubtitleTrack.no());
+                          setState(() => _activeOnline = null);
                           Navigator.pop(ctx);
                         },
                       ),
@@ -604,9 +673,61 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
                           selected: selected.id == subs[i].id,
                           onTap: () {
                             _player.setSubtitleTrack(subs[i]);
+                            setState(() => _activeOnline = null);
                             Navigator.pop(ctx);
                           },
                         ),
+
+                      // ── Online English subtitles ─────────────────────────
+                      const Divider(color: Colors.white12, height: 24),
+                      const _SheetLabel('ONLINE  ·  ENGLISH'),
+                      ValueListenableBuilder<_OnlineSubs>(
+                        valueListenable: _online,
+                        builder: (context, online, _) {
+                          final currentIsOnline = tracks.subtitle.any(
+                              (t) => t.id == selected.id && _isOnlineTrack(t));
+                          switch (online.status) {
+                            case _OnlineStatus.idle:
+                              return const _SheetNote(
+                                  'Online subtitles are not available for this video.');
+                            case _OnlineStatus.loading:
+                              return const _SheetNote(
+                                  'Searching for English subtitles...');
+                            case _OnlineStatus.error:
+                              return _SheetRow(
+                                icon: Icons.refresh_rounded,
+                                label: 'Could not reach the subtitle service',
+                                sublabel: 'Tap to try again',
+                                onTap: _loadOnlineSubtitles,
+                              );
+                            case _OnlineStatus.ready:
+                              if (online.subs.isEmpty) {
+                                return const _SheetNote(
+                                    'No English subtitles found online for this title.');
+                              }
+                              return Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  for (var i = 0; i < online.subs.length; i++)
+                                    _SheetRow(
+                                      label: 'English · Option ${i + 1}',
+                                      sublabel: i == 0
+                                          ? 'Best match - if the timing is off, try another option or use Timing below'
+                                          : null,
+                                      selected:
+                                          currentIsOnline && _activeOnline == i,
+                                      onTap: () {
+                                        _useOnlineSubtitle(i);
+                                        Navigator.pop(ctx);
+                                      },
+                                    ),
+                                ],
+                              );
+                          }
+                        },
+                      ),
+
                       const Divider(color: Colors.white12, height: 24),
                       const _SheetLabel('Size'),
                       Padding(
@@ -651,6 +772,49 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
                           ],
                         ),
                       ),
+                      const _SheetLabel('Timing  (Later = subtitles appear later)'),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                        child: Row(
+                          children: [
+                            _OptionChip(
+                              label: 'Earlier',
+                              selected: false,
+                              onTap: () async {
+                                await _setSubDelay(_subDelay - 0.5);
+                                setSheet(() {});
+                              },
+                            ),
+                            const SizedBox(width: 8),
+                            _OptionChip(
+                              label: 'Later',
+                              selected: false,
+                              onTap: () async {
+                                await _setSubDelay(_subDelay + 0.5);
+                                setSheet(() {});
+                              },
+                            ),
+                            const SizedBox(width: 12),
+                            Text(
+                              _delayLabel(_subDelay),
+                              style: const TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600),
+                            ),
+                            const Spacer(),
+                            if (_subDelay != 0)
+                              _OptionChip(
+                                label: 'Reset',
+                                selected: false,
+                                onTap: () async {
+                                  await _setSubDelay(0);
+                                  setSheet(() {});
+                                },
+                              ),
+                          ],
+                        ),
+                      ),
                     ],
                   );
                 },
@@ -677,14 +841,23 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
 
   String _selectedSubtitleLabel(Tracks tracks, Track current) {
     if (current.subtitle.id == 'no') return 'Off';
-    final subs =
-        tracks.subtitle.where((t) => t.id != 'auto' && t.id != 'no').toList();
+    for (final t in tracks.subtitle) {
+      if (t.id == current.subtitle.id && _isOnlineTrack(t)) {
+        return 'English (online)';
+      }
+    }
+    final subs = tracks.subtitle
+        .where((t) => t.id != 'auto' && t.id != 'no' && !_isOnlineTrack(t))
+        .toList();
     for (var i = 0; i < subs.length; i++) {
       if (subs[i].id == current.subtitle.id) {
         return _trackLabel(subs[i].title, subs[i].language, i + 1);
       }
     }
-    return subs.isEmpty ? 'None available' : 'Auto';
+    if (subs.isEmpty) {
+      return _online.value.subs.isNotEmpty ? 'Online available' : 'None available';
+    }
+    return 'Auto';
   }
 
   // ── Build ──────────────────────────────────────────────────────────────────
@@ -903,11 +1076,39 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
                     valueListenable: _engineState,
                     builder: (context, s, _) => _EngineHud(state: s),
                   ),
-                  IconButton(
-                    icon: const Icon(Icons.closed_caption_rounded),
-                    color: Colors.white,
-                    tooltip: 'Subtitles',
-                    onPressed: _openSubtitleSheet,
+                  ValueListenableBuilder<_OnlineSubs>(
+                    valueListenable: _online,
+                    builder: (context, online, _) {
+                      // Small dot = English subtitles were found online and
+                      // none is switched on yet.
+                      final hint = online.status == _OnlineStatus.ready &&
+                          online.subs.isNotEmpty &&
+                          _activeOnline == null;
+                      return IconButton(
+                        icon: Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            const Icon(Icons.closed_caption_rounded),
+                            if (hint)
+                              Positioned(
+                                right: -2,
+                                top: -2,
+                                child: Container(
+                                  width: 9,
+                                  height: 9,
+                                  decoration: const BoxDecoration(
+                                    color: _accent,
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                        color: Colors.white,
+                        tooltip: 'Subtitles',
+                        onPressed: _openSubtitleSheet,
+                      );
+                    },
                   ),
                   IconButton(
                     icon: const Icon(Icons.settings_rounded),
@@ -1218,6 +1419,14 @@ bool _isImageSubtitle(SubtitleTrack t) {
   final codec = (t.codec ?? '').toLowerCase();
   if (codec.isEmpty) return false;
   return _imageSubtitleCodecs.any(codec.contains);
+}
+
+enum _OnlineStatus { idle, loading, ready, error }
+
+class _OnlineSubs {
+  final _OnlineStatus status;
+  final List<OnlineSubtitle> subs;
+  const _OnlineSubs(this.status, [this.subs = const []]);
 }
 
 class _HudInfo {
