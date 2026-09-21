@@ -242,6 +242,12 @@ class TorrentEngine {
   // Which file is being streamed (set in _startStream).
   int _fileIndex = -1;
   int _fileSize = 0;
+  String? _fileName;
+
+  /// Name / size of the file being streamed (null / 0 until it is picked).
+  /// Used to ask the subtitle service for subtitles that match this release.
+  String? get streamFileName => _fileName;
+  int get streamFileSize => _fileSize;
 
   // ── Pre-buffer gate ────────────────────────────────────────────────────────
   // Don't hand the stream to the player until this many bytes at the start
@@ -368,6 +374,7 @@ class TorrentEngine {
     _fileHint = null;
     _fileIndex = -1;
     _fileSize = 0;
+    _fileName = null;
 
     final id = _activeId;
     if (id != null) {
@@ -708,8 +715,12 @@ class TorrentEngine {
 
       _fileIndex = fileIndex;
       _fileSize = 0;
+      _fileName = null;
       for (final f in files) {
-        if (f.index == fileIndex) _fileSize = f.size;
+        if (f.index == fileIndex) {
+          _fileSize = f.size;
+          _fileName = f.name;
+        }
       }
       _preBufferTarget = _smartPreBuffer
           ? (_fileSize ~/ 100)
