@@ -26,9 +26,15 @@ class _SplashScreenState extends State<SplashScreen>
     // Just wait 2 seconds — HomeScreen loads data itself
     Future.delayed(const Duration(seconds: 2), () {
       if (!mounted) return;
+      // First launch: the mandatory language/tags/quality flow. It writes
+      // AppSettings.onboardingComplete itself once finished, so this check
+      // never fires again after that.
+      final next = AppSettings.onboardingComplete
+          ? const HomeScreen()
+          : const OnboardingScreen();
       Navigator.of(context).pushReplacement(
         PageRouteBuilder(
-          pageBuilder: (_, __, ___) => const HomeScreen(),
+          pageBuilder: (_, __, ___) => next,
           transitionDuration: const Duration(milliseconds: 500),
           transitionsBuilder: (_, anim, __, child) =>
               FadeTransition(opacity: anim, child: child),
