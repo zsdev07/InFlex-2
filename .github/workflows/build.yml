@@ -44,6 +44,14 @@ jobs:
       - name: Run Build Runner
         run: dart run build_runner build --delete-conflicting-outputs
 
+      # flutter_launcher_icons is a generator, not a build step - nothing
+      # above this regenerates the launcher icon files from assets/logo.png
+      # on its own. This overwrites android/app/src/main/res/mipmap-*/
+      # ic_launcher.png before the APK is built, every run, from whatever
+      # assets/logo.png is in the repo at build time.
+      - name: Generate app icons
+        run: dart run flutter_launcher_icons
+
       - name: Analyze
         run: flutter analyze --no-fatal-infos
         continue-on-error: true
