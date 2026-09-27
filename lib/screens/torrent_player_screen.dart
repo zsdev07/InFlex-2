@@ -8,6 +8,8 @@ import 'package:url_launcher/url_launcher.dart';
 import '../services/subtitle_hash.dart';
 import '../services/subtitle_service.dart';
 import '../services/torrent_engine.dart';
+import '../services/pip_service.dart';
+import '../services/watch_history.dart' show WatchTarget, WatchHistory;
 
 // ── TorrentPlayerScreen ───────────────────────────────────────────────────────
 //
@@ -54,6 +56,12 @@ class TorrentPlayerScreen extends StatefulWidget {
   /// Lets the player look up English subtitles online (null = no lookup).
   final SubtitleQuery? subtitleQuery;
 
+  /// What to save watch progress against, and where to resume from. Both
+  /// null = nothing is saved and playback starts at 0 (e.g. a cached
+  /// Telegram stream, which has its own player).
+  final WatchTarget? watchTarget;
+  final Duration? resumePosition;
+
   const TorrentPlayerScreen({
     super.key,
     required this.streamUrl,
@@ -61,6 +69,8 @@ class TorrentPlayerScreen extends StatefulWidget {
     required this.quality,
     required this.engine,
     this.subtitleQuery,
+    this.watchTarget,
+    this.resumePosition,
   });
 
   @override
@@ -125,6 +135,14 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
   Timer? _unlockTimer;
   Duration _lastPos = Duration.zero;
 
+  // ── Resume + watch history ──────────────────────────────────────────────
+  bool _resumeApplied = false;
+  Timer? _historyTimer;
+
+  // ── Picture-in-Picture ───────────────────────────────────────────────────
+  bool _inPip = false;
+  StreamSubscription<bool>? _pipSub;
+
   bool get _menuOpen => _menusOpen > 0;
   bool get _busy => _buffering || _opening;
 
@@ -182,6 +200,10 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
         playing: playing,
         duration: _player.state.duration,
       );
+      // Lets MainActivity's onUserLeaveHint() decide whether to auto-enter
+      // PiP when the person leaves the app (Home button) - only while
+      // something is actually playing, never on a paused video.
+      PipService.setState(allowed: true, playing: playing);
       if (!mounted) return;
       setState(() {
         _playing = playing;
@@ -211,6 +233,7 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
       if (d > Duration.zero && _opening && mounted) {
         setState(() => _opening = false);
       }
+      _applyResumeOnce(d);
     }));
 
     // mpv can report time-pos once per video frame. Re-emit at most 5x per
@@ -231,8 +254,48 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
     _dlTimer = Timer.periodic(
         const Duration(seconds: 1), (_) => _refreshDownloaded());
 
+    // Saves progress every 10 s, so a crash/kill mid-movie still leaves a
+    // resume point close to where the person actually was.
+    _historyTimer = Timer.periodic(
+        const Duration(seconds: 10), (_) => _saveProgress());
+
+    _pipSub = PipService.modeChanges.listen((inPip) {
+      if (!mounted) return;
+      setState(() => _inPip = inPip);
+    });
+
     _initAndOpen();
     _loadOnlineSubtitles();
+  }
+
+  /// Seeks to widget.resumePosition exactly once, the first time we know the
+  /// real duration (seeking before that can land past the end of the file).
+  /// Skips resuming into the last ~45 s - that's effectively "finished".
+  void _applyResumeOnce(Duration duration) {
+    if (_resumeApplied) return;
+    final target = widget.resumePosition;
+    if (target == null || duration <= Duration.zero) return;
+    _resumeApplied = true;
+    if (target < duration - const Duration(seconds: 45)) {
+      _player.seek(target);
+      _position.value = target;
+    }
+  }
+
+  /// Writes the current position to WatchHistory (see watch_history.dart -
+  /// it decides on its own whether that's "worth remembering" or should
+  /// instead clear a finished title's entry).
+  Future<void> _saveProgress() async {
+    final target = widget.watchTarget;
+    if (target == null) return;
+    final position = _player.state.position;
+    final duration = _player.state.duration;
+    if (duration <= Duration.zero) return;
+    try {
+      await WatchHistory.save(target, position: position, duration: duration);
+    } catch (e) {
+      debugPrint('[TorrentPlayerScreen] saving progress failed: $e');
+    }
   }
 
   Future<void> _initAndOpen() async {
@@ -272,12 +335,17 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
+    PipService.setState(allowed: false, playing: false);
+    _pipSub?.cancel();
+    unawaited(_saveProgress());
+
     for (final s in _subs) {
       s.cancel();
     }
     _hideTimer?.cancel();
     _posTimer?.cancel();
     _dlTimer?.cancel();
+    _historyTimer?.cancel();
     _hudTimer?.cancel();
     _chainTimer?.cancel();
     _unlockTimer?.cancel();
@@ -895,6 +963,21 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
   Widget build(BuildContext context) {
     if (_error != null) return _buildErrorScreen();
 
+    // Android has shrunk us to a small floating window - our own controls,
+    // gestures and subtitle layer would be unreadable/unusable there, and
+    // the system already draws its own play/pause + close chrome around a
+    // PiP window. Show nothing but the video.
+    if (_inPip) {
+      return Scaffold(
+        backgroundColor: Colors.black,
+        body: Video(
+          controller: _controller,
+          controls: NoVideoControls,
+          fill: Colors.black,
+        ),
+      );
+    }
+
     final shown = _controlsShown;
 
     return Scaffold(
@@ -1138,6 +1221,12 @@ class _TorrentPlayerScreenState extends State<TorrentPlayerScreen> {
                         onPressed: _openSubtitleSheet,
                       );
                     },
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.picture_in_picture_alt_rounded),
+                    color: Colors.white,
+                    tooltip: 'Picture in picture',
+                    onPressed: () => PipService.enter(),
                   ),
                   IconButton(
                     icon: const Icon(Icons.settings_rounded),
