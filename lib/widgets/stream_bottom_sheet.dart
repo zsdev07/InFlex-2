@@ -5,6 +5,8 @@ import '../services/release_parser.dart';
 import '../services/tmdb_service.dart';
 import '../services/stream_service.dart';
 import '../services/subtitle_service.dart';
+import '../services/app_settings.dart';
+import '../services/watch_history.dart';
 import '../services/supabase_cache_repo.dart';
 import '../services/torrent_engine.dart' show StreamFileHint;
 import '../screens/player_screen.dart';
@@ -79,6 +81,16 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
   String? _qualityFilter; // null = all
   _SortMode _sort = _SortMode.best;
 
+  // Resume where you left off (Settings > onboarding's default quality also
+  // lives here, applied in _qualityScore below).
+  late WatchHistoryEntry? _resume = WatchHistory.get(
+    widget.item.id,
+    widget.item.mediaType,
+    season: widget.season,
+    episode: widget.episode,
+  );
+  bool _resumeEnabled = true;
+
   bool get _isTv => widget.item.mediaType == 'tv';
 
   String? get _originalName =>
@@ -94,6 +106,14 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
   }
 
   Future<void> _fetchStreams() async {
+    // The resume point can change while the sheet is open (e.g. it's a
+    // re-open right after the player saved progress) - re-read it.
+    _resume = WatchHistory.get(
+      widget.item.id,
+      widget.item.mediaType,
+      season: widget.season,
+      episode: widget.episode,
+    );
     setState(() {
       _loading = true;
       _error = null;
@@ -243,6 +263,18 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
     }
   }
 
+  /// Same as [_qualityRank], but the quality chosen at onboarding
+  /// (Settings > onboarding, AppSettings.preferredQuality) is boosted above
+  /// every other quality - "1080p first, then the rest", not a filter.
+  int _qualityScore(TorrentStream s) {
+    final rank = _qualityRank(s);
+    final preferred = AppSettings.preferredQuality;
+    if (preferred != null && _resolutionBucket(s) == preferred) {
+      return rank + 100;
+    }
+    return rank;
+  }
+
   int _healthRank(TorrentStream s) {
     switch (seedHealthFor(s.seeds)) {
       case SeedHealth.strong:
@@ -276,14 +308,14 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
         list.sort((a, b) {
           final h = _healthRank(b).compareTo(_healthRank(a));
           if (h != 0) return h;
-          final q = _qualityRank(b).compareTo(_qualityRank(a));
+          final q = _qualityScore(b).compareTo(_qualityScore(a));
           if (q != 0) return q;
           return bySeeds(a, b);
         });
         break;
       case _SortMode.quality:
         list.sort((a, b) {
-          final q = _qualityRank(b).compareTo(_qualityRank(a));
+          final q = _qualityScore(b).compareTo(_qualityScore(a));
           if (q != 0) return q;
           return bySeeds(a, b);
         });
@@ -411,6 +443,19 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
             fileName: stream.fileName,
           );
 
+    final watchTarget = WatchTarget(
+      tmdbId: widget.item.id,
+      mediaType: widget.item.mediaType,
+      title: widget.item.title,
+      posterPath: widget.item.posterPath,
+      backdropPath: widget.item.backdropPath,
+      season: _isTv ? widget.season : null,
+      episode: _isTv ? widget.episode : null,
+    );
+    final resume = _resume;
+    final resumePosition =
+        (_resumeEnabled && resume != null) ? resume.position : null;
+
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -420,6 +465,59 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
           quality: stream.quality,
           fileHint: hint,
           subtitleQuery: subtitleQuery,
+          watchTarget: watchTarget,
+          resumePosition: resumePosition,
+        ),
+      ),
+    );
+  }
+
+  String _fmtDuration(Duration d) {
+    final h = d.inHours;
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final sec = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return h > 0 ? '$h:$m:$sec' : '$m:$sec';
+  }
+
+  Widget _buildResumeBanner(WatchHistoryEntry entry) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: _gold.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: _gold.withValues(alpha: 0.25)),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              _resumeEnabled ? Icons.history_rounded : Icons.replay_rounded,
+              color: _gold,
+              size: 18,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                _resumeEnabled
+                    ? 'Resume from ${_fmtDuration(entry.position)}'
+                    : 'Will start from the beginning',
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700),
+              ),
+            ),
+            TextButton(
+              onPressed: () =>
+                  setState(() => _resumeEnabled = !_resumeEnabled),
+              child: Text(
+                _resumeEnabled ? 'Start over' : 'Resume',
+                style: const TextStyle(
+                    color: _gold, fontSize: 12, fontWeight: FontWeight.w700),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -490,6 +588,7 @@ class _StreamBottomSheetState extends State<StreamBottomSheet> {
                 ],
               ),
             ),
+            if (_resume != null) _buildResumeBanner(_resume!),
             const Divider(color: Colors.white12, height: 1),
             // Body
             Expanded(child: _buildBody(controller)),
