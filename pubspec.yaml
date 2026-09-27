@@ -57,5 +57,22 @@ dev_dependencies:
   flutter_lints: ^4.0.0
   build_runner: ^2.4.9
 
+  # App/launcher icon generator. Run once after adding/changing
+  # assets/logo.png:  dart run flutter_launcher_icons
+  # (this does NOT touch the splash screen's own logo - that one is drawn
+  # in code, see screens/splash_screen.dart - only the installed app icon.)
+  flutter_launcher_icons: ^0.14.3
+
 flutter:
   uses-material-design: true
+  assets:
+    - assets/logo.png
+
+# Config read by `dart run flutter_launcher_icons`.
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "assets/logo.png"
+  # Regenerates android/app/src/main/res/mipmap-*/ic_launcher.png at every
+  # density from this one image - crop it square with the subject centred
+  # for the best result (launchers apply their own mask/shape on top).
