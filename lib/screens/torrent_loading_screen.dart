@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/app_settings.dart';
 import '../services/subtitle_service.dart';
+import '../services/watch_history.dart' show WatchTarget;
 import '../services/torrent_engine.dart';
 import 'torrent_player_screen.dart';
 
@@ -35,6 +36,12 @@ class TorrentLoadingScreen extends StatefulWidget {
   /// Lets the player look up English subtitles online (null = no lookup).
   final SubtitleQuery? subtitleQuery;
 
+  /// What to save watch progress against (null = don't save/resume).
+  final WatchTarget? watchTarget;
+
+  /// Where to seek to once playback starts (null = start from 0).
+  final Duration? resumePosition;
+
   const TorrentLoadingScreen({
     super.key,
     required this.magnetLink,
@@ -43,6 +50,8 @@ class TorrentLoadingScreen extends StatefulWidget {
     this.debugNote,
     this.fileHint,
     this.subtitleQuery,
+    this.watchTarget,
+    this.resumePosition,
   });
 
   @override
@@ -106,6 +115,8 @@ class _TorrentLoadingScreenState extends State<TorrentLoadingScreen>
               quality: widget.quality,
               engine: _engine,
               subtitleQuery: widget.subtitleQuery,
+              watchTarget: widget.watchTarget,
+              resumePosition: widget.resumePosition,
             ),
             transitionsBuilder: (_, animation, __, child) => FadeTransition(
               opacity: animation,
