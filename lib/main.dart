@@ -37,13 +37,16 @@ void main() async {
     await Hive.initFlutter();
     await Hive.openBox('watchlist');
     await Hive.openBox('settings');
+    await Hive.openBox('watch_history');
   } catch (e) {
     debugPrint('Hive init error, retrying clean: $e');
     try {
       await Hive.deleteBoxFromDisk('watchlist');
       await Hive.deleteBoxFromDisk('settings');
+      await Hive.deleteBoxFromDisk('watch_history');
       await Hive.openBox('watchlist');
       await Hive.openBox('settings');
+      await Hive.openBox('watch_history');
     } catch (_) {}
   }
 
