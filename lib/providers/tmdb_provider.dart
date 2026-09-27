@@ -12,6 +12,14 @@ class TmdbProvider extends ChangeNotifier {
   List<MediaItem> hindiDubbedAnimated = [];
   List<MediaItem> searchResults = [];
 
+  /// "Recommended for you" (onboarding language + tags). Empty until
+  /// onboarding has set a language - see TmdbService.getForYou.
+  List<MediaItem> forYou = [];
+
+  /// Watch-provider rows ("Popular · Movie Channels"), keyed by TMDB
+  /// provider id (see TmdbService.providerChannels).
+  Map<int, List<MediaItem>> channels = {};
+
   bool loading = false;
   bool searchLoading = false;
   String? error;
@@ -43,6 +51,20 @@ class TmdbProvider extends ChangeNotifier {
     try { hindiDubbedAnimated = await TmdbService.getHindiDubbedAnimated(); } 
     catch (e) { debugPrint('animated error: $e'); }
 
+    try { forYou = await TmdbService.getForYou(); }
+    catch (e) { debugPrint('forYou error: $e'); }
+
+    // Channel rows in parallel - one slow/failing provider shouldn't hold
+    // up the others.
+    await Future.wait(TmdbService.providerChannels.map((c) async {
+      final (_, id) = c;
+      try {
+        channels[id] = await TmdbService.getProviderMovies(id);
+      } catch (e) {
+        debugPrint('channel $id error: $e');
+      }
+    }));
+
     debugPrint('=== TMDB LOAD COMPLETE ===');
     debugPrint('trending: ${trending.length}');
     debugPrint('hindiMovies: ${hindiMovies.length}');
@@ -51,6 +73,8 @@ class TmdbProvider extends ChangeNotifier {
     debugPrint('southDubbed: ${southDubbed.length}');
     debugPrint('hollywood: ${hindiDubbedHollywood.length}');
     debugPrint('animated: ${hindiDubbedAnimated.length}');
+    debugPrint('forYou: ${forYou.length}');
+    debugPrint('channels: ${channels.map((k, v) => MapEntry(k, v.length))}');
 
     if (trending.isEmpty && hindiMovies.isEmpty) {
       error = 'Could not load content. Check internet connection.';
