@@ -4,7 +4,10 @@ import '../providers/tmdb_provider.dart';
 import '../models/media_model.dart';
 import '../widgets/hero_banner.dart';
 import '../widgets/media_row.dart';
+import '../widgets/continue_watching_row.dart';
+import '../widgets/channel_row.dart';
 import '../widgets/search_bar_widget.dart';
+import '../services/watch_history.dart';
 import 'detail_screen.dart';
 import 'settings_screen.dart';
 
@@ -18,6 +21,40 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   int _tab = 0;
   bool _searching = false;
+  List<WatchHistoryEntry> _continueWatching = WatchHistory.list();
+
+  /// Re-reads watch history from Hive (cheap, local) - called whenever the
+  /// user could have changed it: returning from a player, or removing a
+  /// Continue Watching card.
+  void _refreshContinueWatching() {
+    if (!mounted) return;
+    setState(() => _continueWatching = WatchHistory.list());
+  }
+
+  void _resumeEntry(WatchHistoryEntry entry) {
+    final item = MediaItem(
+      id: entry.tmdbId,
+      title: entry.title,
+      posterPath: entry.posterPath,
+      backdropPath: entry.backdropPath,
+      mediaType: entry.mediaType,
+    );
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DetailScreen(
+          item: item,
+          initialSeason: entry.season,
+          autoPlayEpisode: entry.episode,
+        ),
+      ),
+    ).then((_) => _refreshContinueWatching());
+  }
+
+  Future<void> _removeContinueWatching(WatchHistoryEntry entry) async {
+    setState(() => _continueWatching.remove(entry));
+    await WatchHistory.remove(entry.tmdbId, entry.mediaType);
+  }
   final _searchCtrl = TextEditingController();
 
   @override
@@ -55,7 +92,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       ),
-    );
+    ).then((_) => _refreshContinueWatching());
   }
 
   @override
@@ -263,6 +300,17 @@ class _HomeScreenState extends State<HomeScreen> {
           // Tab chips
           _buildTabChips(),
 
+          // Resume where you left off - real position, from watch_history.dart.
+          if (_tab == 0)
+            ContinueWatchingRow(
+              items: _continueWatching,
+              onTap: _resumeEntry,
+              onRemove: _removeContinueWatching,
+            ),
+
+          // Popular · Movie Channels - TMDB watch-provider rows.
+          if (_tab == 0) ChannelRow(channels: provider.channels),
+
           // Content rows
           ...rows.map((row) => MediaRow(
                 title: row.$1,
@@ -279,6 +327,8 @@ class _HomeScreenState extends State<HomeScreen> {
     switch (_tab) {
       case 0:
         return [
+          if (p.forYou.isNotEmpty)
+            ('✨ Recommended For You', p.forYou, const Color(0xFF14B8A6)),
           ('🔥 Trending in India', p.trending, const Color(0xFFFFCC00)),
           ('🎬 Hindi Movies', p.hindiMovies, const Color(0xFFf59e0b)),
           ('📺 Hindi Web Series', p.hindiShows, const Color(0xFF3b82f6)),
