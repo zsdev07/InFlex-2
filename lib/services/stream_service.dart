@@ -21,24 +21,36 @@ class StreamService {
 
   // Public trackers appended to every magnet we build.
   //
-  // Was UDP-only (including udp://9.rarbg.com:2810 — RARBG shut down in
-  // 2023, that tracker's been dead for two years). DHT peer discovery is
-  // also UDP, so on any network that blocks/throttles outbound UDP
-  // (common on mobile carriers and restrictive Wi-Fi, often silently),
-  // DHT *and* every tracker here failed together — no way to ever get
-  // metadata, on any torrent. HTTP(S) trackers run over plain TCP 80/443,
-  // same as normal web traffic, so they're the fallback that actually
-  // gets through when UDP doesn't.
+  // UDP trackers use the same protocol as DHT peer discovery, so on any
+  // network that blocks/throttles outbound UDP (common on mobile carriers
+  // and restrictive Wi-Fi, often silently), DHT *and* every UDP tracker
+  // here fail together - no way to ever get metadata, on any torrent.
+  // HTTP trackers run over plain TCP 80, same as normal web traffic, so
+  // they're the fallback that actually gets through when UDP doesn't.
+  //
+  // NOTE: no https:// entries. InTorrent's libtorrent build has no TLS
+  // (see native/src/intorrent.cpp's TORRENT_USE_LIBCRYPTO=0) - an https
+  // tracker isn't slow here, it's a guaranteed failure every single
+  // announce. The two that used to be here (tamersunion, gbitt) never
+  // worked for that reason and were pure dead weight.
+  //
+  // List refreshed from ngosang/trackerslist's "trackers_best" (a
+  // continuously-updated, machine-checked list of working public
+  // trackers: https://github.com/ngosang/trackerslist) - re-pull that if
+  // this list goes stale again; trackers rot over a matter of months.
   static const _trackers = [
     'udp://tracker.opentrackr.org:1337/announce',
-    'udp://open.tracker.cl:1337/announce',
-    'udp://tracker.openbittorrent.com:6969/announce',
+    'udp://open.stealth.si:80/announce',
+    'udp://tracker.torrent.eu.org:451/announce',
+    'udp://open.demonii.com:1337/announce',
     'udp://exodus.desync.com:6969/announce',
-    'http://tracker.opentrackr.org:1337/announce',
-    'https://tracker.tamersunion.org:443/announce',
-    'https://tracker.gbitt.info:443/announce',
-    'http://open.acgnxtracker.com:80/announce',
+    'udp://tracker.theoks.net:6969/announce',
+    'udp://explodie.org:6969/announce',
+    'udp://tracker-udp.gbitt.info:80/announce',
+    'http://tracker.dler.com:6969/announce',
+    'http://tracker.renfei.net:8080/announce',
   ];
+
 
   // ── MAIN ENTRY POINT ──────────────────────────────────────────────────────
   static Future<List<TorrentStream>> getAllStreams({
