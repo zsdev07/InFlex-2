@@ -9,7 +9,20 @@ import '../widgets/stream_bottom_sheet.dart';
 
 class DetailScreen extends StatefulWidget {
   final MediaItem item;
-  const DetailScreen({super.key, required this.item});
+
+  /// Continue Watching: open straight to this season and, once its
+  /// episodes load, straight to this episode's source picker (with resume -
+  /// stream_bottom_sheet.dart looks the position up itself from the item +
+  /// season + episode). Both null for a normal visit / movies.
+  final int? initialSeason;
+  final int? autoPlayEpisode;
+
+  const DetailScreen({
+    super.key,
+    required this.item,
+    this.initialSeason,
+    this.autoPlayEpisode,
+  });
 
   @override
   State<DetailScreen> createState() => _DetailScreenState();
@@ -17,9 +30,10 @@ class DetailScreen extends StatefulWidget {
 
 class _DetailScreenState extends State<DetailScreen> {
   MediaDetails? _details;
-  int _selectedSeason = 1;
+  late int _selectedSeason = widget.initialSeason ?? 1;
   List<Episode> _episodes = [];
   bool _episodesLoading = false;
+  bool _autoPlayed = false;
 
   @override
   void initState() {
@@ -31,7 +45,9 @@ class _DetailScreenState extends State<DetailScreen> {
     try {
       final d = await TmdbService.getDetails(widget.item.id, widget.item.mediaType);
       setState(() { _details = d; });
-      if (widget.item.mediaType == 'tv') _loadEpisodes(1);
+      if (widget.item.mediaType == 'tv') {
+        _loadEpisodes(widget.initialSeason ?? 1);
+      }
     } catch (e) {
       // details failed to load, show what we have
     }
@@ -42,6 +58,16 @@ class _DetailScreenState extends State<DetailScreen> {
     try {
       final eps = await TmdbService.getEpisodes(widget.item.id, season);
       setState(() { _episodes = eps; _episodesLoading = false; });
+      final target = widget.autoPlayEpisode;
+      if (!_autoPlayed && target != null && season == widget.initialSeason) {
+        final match = eps.any((e) => e.episodeNumber == target);
+        if (match) {
+          _autoPlayed = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _openStreams(season: season, episode: target);
+          });
+        }
+      }
     } catch (_) {
       setState(() => _episodesLoading = false);
     }
