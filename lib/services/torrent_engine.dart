@@ -256,7 +256,10 @@ class TorrentEngine {
   static const int _minPreBufferBytes = 8 * 1024 * 1024;
   static const int _maxPreBufferBytes = 32 * 1024 * 1024;
   // Never wait longer than this - a weak swarm must not block playback.
-  static const Duration _maxPreBufferWait = Duration(seconds: 25);
+  // Was 25s; bumped alongside InTorrent's rangeWaitTimeout (see that file)
+  // after a field log showed a single-seed source still climbing steadily
+  // at the 25s mark, just too slowly to have reached the target yet.
+  static const Duration _maxPreBufferWait = Duration(seconds: 45);
   bool _gatePassed = false;
   int _preBufferTarget = 0;
   DateTime? _streamStartedAt;
